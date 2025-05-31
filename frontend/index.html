@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Avika Chat Test</title>
+    <style>
+        body { font-family: sans-serif; margin: 0; background-color: #f4f4f9; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+        #chat-container { width: 100%; max-width: 600px; background-color: #fff; box-shadow: 0 0 20px rgba(0,0,0,0.1); border-radius: 8px; display: flex; flex-direction: column; height: 80vh; }
+        #chat-header { background-color: #6A1B9A; color: white; padding: 15px; text-align: center; border-top-left-radius: 8px; border-top-right-radius: 8px; }
+        #chat-header h1 { margin: 0; font-size: 1.5em; }
+        #chat-messages { flex-grow: 1; padding: 20px; overflow-y: auto; border-bottom: 1px solid #eee; }
+        .message { margin-bottom: 15px; padding: 10px; border-radius: 7px; line-height: 1.4; }
+        .user-message { background-color: #E1BEE7; margin-left: auto; text-align: right; max-width: 70%; }
+        .avika-message { background-color: #EDE7F6; margin-right: auto; max-width: 70%; }
+        .message-sender { font-weight: bold; margin-bottom: 5px; font-size: 0.9em; }
+        .user-message .message-sender { color: #4A148C; }
+        .avika-message .message-sender { color: #311B92; }
+        #chat-input-area { display: flex; padding: 15px; border-top: 1px solid #ddd; background-color: #f9f9f9; }
+        #user-input { flex-grow: 1; padding: 10px; border: 1px solid #ccc; border-radius: 20px; margin-right: 10px; }
+        #send-button { padding: 10px 20px; background-color: #7E57C2; color: white; border: none; border-radius: 20px; cursor: pointer; }
+        #send-button:hover { background-color: #5E35B1; }
+        .loading-indicator { text-align: center; padding: 10px; color: #777; }
+        .error-message { color: red; font-style: italic; text-align: center; padding: 10px; }
+    </style>
+</head>
+<body>
+    <div id="chat-container">
+        <div id="chat-header">
+            <h1>Avika Chat</h1>
+        </div>
+        <div id="chat-messages">
+            <!-- Chat messages will be appended here -->
+        </div>
+        <div id="chat-input-area">
+            <input type="text" id="user-input" placeholder="Type your message...">
+            <button id="send-button">Send</button>
+        </div>
+    </div>
+
+    <script>
+        const chatMessages = document.getElementById('chat-messages');
+        const userInput = document.getElementById('user-input');
+        const sendButton = document.getElementById('send-button');
+        let sessionId = null; // To store the session ID
+
+        // Function to add a message to the chat window
+        function addMessage(sender, text, isUser) {
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message');
+            messageDiv.classList.add(isUser ? 'user-message' : 'avika-message');
+            
+            const senderDiv = document.createElement('div');
+            senderDiv.classList.add('message-sender');
+            senderDiv.textContent = sender;
+            
+            const textDiv = document.createElement('div');
+            textDiv.textContent = text;
+            
+            messageDiv.appendChild(senderDiv);
+            messageDiv.appendChild(textDiv);
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight; // Scroll to the bottom
+        }
+
+        // Function to show a loading indicator
+        function showLoading() {
+            const loadingDiv = document.createElement('div');
+            loadingDiv.classList.add('loading-indicator');
+            loadingDiv.textContent = 'Avika is thinking...';
+            chatMessages.appendChild(loadingDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        // Function to remove loading indicator
+        function hideLoading() {
+            const loadingDiv = chatMessages.querySelector('.loading-indicator');
+            if (loadingDiv) {
+                chatMessages.removeChild(loadingDiv);
+            }
+        }
+        
+        // Function to show error message
+        function showError(message) {
+            const errorDiv = document.createElement('div');
+            errorDiv.classList.add('error-message');
+            errorDiv.textContent = message;
+            chatMessages.appendChild(errorDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        // Function to send message to the API
+        async function sendMessage() {
+            const messageText = userInput.value.trim();
+            if (messageText === '') return;
+
+            addMessage('You', messageText, true);
+            userInput.value = ''; // Clear input field
+            showLoading();
+            sendButton.disabled = true;
+
+            try {
+                const requestBody = { message: messageText };
+                if (sessionId) {
+                    requestBody.session_id = sessionId;
+                }
+
+                const response = await fetch('http://localhost:8000/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestBody),
+                });
+
+                hideLoading();
+                sendButton.disabled = false;
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ detail: "Failed to parse error response." }));
+                    console.error('API Error Response:', errorData);
+                    showError(`Error: ${response.status} - ${errorData.detail || "Could not connect to Avika."}`);
+                    return;
+                }
+
+                const data = await response.json();
+                if (data.response) {
+                    addMessage('Avika', data.response, false);
+                    if (data.session_id) {
+                        sessionId = data.session_id; // Update session ID
+                    }
+                } else if (data.error) {
+                    showError(`Avika Error: ${data.error}`);
+                } else {
+                     showError('Received an unexpected response from Avika.');
+                }
+
+            } catch (error) {
+                hideLoading();
+                sendButton.disabled = false;
+                console.error('Network or other error:', error);
+                showError('Could not reach Avika. Please ensure the API server is running and accessible.');
+            }
+        }
+
+        sendButton.addEventListener('click', sendMessage);
+        userInput.addEventListener('keypress', function(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // Display initial greeting from Avika (if your API supports an initial greeting or if we simulate it)
+        // For now, we'll assume the user starts the conversation.
+        // If Avika's first message is fixed, we can add it here.
+        // Example: addMessage('Avika', "Hello! I'm Avika. What's on your mind?", false);
+        // This needs to align with how your AvikaChat class initializes the conversation history.
+        // The AvikaChat class now appends the initial greeting. To display it:
+        // 1. We could make a GET /initial_greeting endpoint
+        // 2. Or, if the first /chat POST with a new session_id returns it, handle it there.
+        // For simplicity here, the first message from Avika will be its actual first response.
+
+    </script>
+</body>
+</html> 
