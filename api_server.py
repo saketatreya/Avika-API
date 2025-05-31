@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware # Added for CORS
 from pydantic import BaseModel
 from typing import Optional, Dict
 import uvicorn
@@ -13,6 +14,17 @@ app = FastAPI(
     title="Avika Chat API",
     description="Mental health recommendation chatbot API",
     version="1.0.1" # Updated version
+)
+
+# --- CORS Middleware ---
+# Allow all origins for simplicity in local development.
+# For production, you should restrict this to your frontend's actual domain.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, OPTIONS, etc.)
+    allow_headers=["*"],  # Allows all headers
 )
 
 # --- Global Initialization of Avika Components ---
