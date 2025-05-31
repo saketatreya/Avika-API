@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pydantic
+chromadb
+sentence-transformers
+python-docx
+google-generativeai
+numpy
+torch
+transformers
+langchain-text-splitters
