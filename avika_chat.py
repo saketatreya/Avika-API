@@ -6,6 +6,7 @@ import google.generativeai as genai
 from docx import Document
 from sentence_transformers import SentenceTransformer
 from chromadb.config import Settings
+from typing import Optional
 
 def load_avika_titles():
     """Load titles and categories directly from Avika_Titles.docx"""
@@ -78,6 +79,12 @@ def gemini_generate(prompt):
         return "I'm currently unable to connect to my services. Please check your internet connection and try again."
 
 class AvikaChat:
+    RECOMMENDATION_KEYWORDS = [
+        "recommend", "suggest", "book", "video", "song", "audio", "music",
+        "read", "watch", "listen", "resource", "tool", "help me find", "article"
+    ]
+    MIN_EMPATHY_TURNS = 1 # Ensure at least one turn of empathy by default
+
     def __init__(self, model, avika_titles, title_embeddings, chroma_collection):
         self.model = model
         self.avika_titles = avika_titles
@@ -286,11 +293,60 @@ class AvikaChat:
         
         return matching_titles
 
-    def chat(self, user_input, max_turns=4):
-        """Main chat method for processing user input and generating responses"""
+    def _is_requesting_recommendation(self, user_input_lower: str) -> bool:
+        """Check if user input explicitly asks for a recommendation."""
+        return any(keyword in user_input_lower for keyword in self.RECOMMENDATION_KEYWORDS)
+
+    def _has_sufficient_context_for_proactive_recommendation(self) -> bool:
+        """Heuristic to check if conversation context might be rich enough for a recommendation."""
+        if not self.chat_history:
+            return False
         
-        # Safety check on current input + recent history
-        # Pass last 5 messages from history for contextual safety check
+        full_user_context = " ".join([
+            msg.replace(self.USER_PREFIX, "") for msg in self.chat_history if msg.startswith(self.USER_PREFIX)
+        ])
+        if not full_user_context.strip(): # Ensure there's actual user input
+            return False
+
+        # Perform a light check for any relevant title
+        potential_titles = self._get_relevant_titles(
+            emotional_context=full_user_context,
+            top_k=1 # We only need to know if at least one potentially relevant title exists
+        )
+        return bool(potential_titles)
+
+    def _get_content_preference(self, user_input_lower: str) -> Optional[str]:
+        """Detect content type preference from user input."""
+        if any(word in user_input_lower for word in ["video", "watch", "youtube"]):
+            return "video"
+        elif any(word in user_input_lower for word in ["book", "read", "reading", "article"]):
+            return "book"
+        elif any(word in user_input_lower for word in ["music", "song", "listen", "audio"]):
+            return "music"
+        return None
+
+    def _generate_reflection_summary(self) -> str:
+        """Generate a reflective summary based on the conversation so far."""
+        full_user_context = " ".join([
+            msg.replace(self.USER_PREFIX, "") for msg in self.chat_history if msg.startswith(self.USER_PREFIX)
+        ])
+        emotional_themes = self._get_emotional_context(full_user_context) # _get_emotional_context uses history + its input argument effectively
+        primary_theme_info = emotional_themes[0] if emotional_themes else "what you are currently experiencing"
+        # Refine theme extraction to be more concise if it's a long snippet
+        if "Theme from" in primary_theme_info and ": " in primary_theme_info:
+            theme_content = primary_theme_info.split(": ", 1)[1]
+            if len(theme_content) > 100:
+                theme_content = theme_content[:100] + "..."
+            reflection_text = f"you're dealing with themes like '{theme_content}'"
+        else:
+            reflection_text = primary_theme_info
+
+        return f"From our conversation, it seems like {reflection_text}. I'd like to offer something that might be helpful."
+
+    def chat(self, user_input, max_turns_for_history=4):
+        user_input_lower = user_input.lower()
+
+        # Initial safety check on current input + recent history
         has_concerns, crisis_response = self.check_safety_concerns(user_input, self.chat_history[-5:])
         if has_concerns:
             self.chat_history.append(f"{self.USER_PREFIX}{user_input}")
@@ -298,43 +354,38 @@ class AvikaChat:
             return crisis_response
 
         self.chat_history.append(f"{self.USER_PREFIX}{user_input}")
-        # Keep a rolling window of recent history for prompts
-        recent_history_for_prompt = self.chat_history[-(max_turns*2):] 
+        recent_history_for_prompt = self.chat_history[-(max_turns_for_history*2):]
 
-        if self.turn_number < 2: # Reduced empathy-only turns to make conversation flow faster
-            emotional_themes = self._get_emotional_context(user_input)
-            context_str = "\n\n".join(emotional_themes)
-            prompt = self._construct_empathy_prompt(user_input, context_str, recent_history_for_prompt)
-            llm_response = gemini_generate(prompt)
-
-            # Double-check LLM response for safety against full history
-            has_concerns, crisis_response = self.check_safety_concerns(llm_response, self.chat_history)
-            response = crisis_response if has_concerns else llm_response
+        attempt_recommendation = False
+        if self.turn_number >= self.MIN_EMPATHY_TURNS:
+            if self._is_requesting_recommendation(user_input_lower):
+                attempt_recommendation = True
+            elif self._has_sufficient_context_for_proactive_recommendation():
+                attempt_recommendation = True
         
-        else: # Recommendation phase
-            full_user_context = " ".join([msg.replace(self.USER_PREFIX, "") for msg in self.chat_history if msg.startswith(self.USER_PREFIX)])
-            
+        # Fallback: If many turns pass without clear signal, maybe ask to recommend?
+        # For now, this is not implemented to keep it simpler. Could be added if bot gets stuck in empathy.
+
+        response_text = ""
+
+        if attempt_recommendation:
+            # --- Recommendation Phase ---
             # Safety check on full user context before making recommendations
-            has_concerns, crisis_response = self.check_safety_concerns(full_user_context, self.chat_history)
+            full_user_dialogue_for_safety = " ".join([msg.replace(self.USER_PREFIX, "") for msg in self.chat_history if msg.startswith(self.USER_PREFIX)])
+            has_concerns, crisis_response = self.check_safety_concerns(full_user_dialogue_for_safety, self.chat_history)
             if has_concerns:
-                # Ensure crisis response is also added to history if triggered here
-                if not self.chat_history[-1].startswith(self.AVIKA_PREFIX) or crisis_response not in self.chat_history[-1] :
-                     self.chat_history.append(f"{self.AVIKA_PREFIX}{crisis_response}")
+                if not self.chat_history[-1].startswith(self.AVIKA_PREFIX) or crisis_response not in self.chat_history[-1]:
+                    self.chat_history.append(f"{self.AVIKA_PREFIX}{crisis_response}")
+                self.turn_number += 1
                 return crisis_response
 
-            # Gentle transition: Reflective summary
-            reflection_summary = f"From what you've shared, it sounds like you're dealing with: {self._get_emotional_context(full_user_context)[0] if self._get_emotional_context(full_user_context) else 'what you are currently experiencing'}. I'd like to offer something that might be helpful."
+            reflection_summary = self._generate_reflection_summary()
+            content_preference = self._get_content_preference(user_input_lower)
             
-            content_preference = None
-            if any(word in user_input.lower() for word in ["video", "watch", "youtube"]):
-                content_preference = "video"
-            elif any(word in user_input.lower() for word in ["book", "read", "reading"]):
-                content_preference = "book"
-            elif any(word in user_input.lower() for word in ["music", "song", "listen", "audio"]):
-                content_preference = "music"
-
-            user_messages = [msg.replace(self.USER_PREFIX, "") for msg in self.chat_history if msg.startswith(self.USER_PREFIX)]
-            emotional_context_for_titles = " ".join(user_messages)
+            # Use the full user dialogue for title matching context
+            emotional_context_for_titles = " ".join([
+                msg.replace(self.USER_PREFIX, "") for msg in self.chat_history if msg.startswith(self.USER_PREFIX)
+            ])
 
             matching_titles = self._get_relevant_titles(
                 emotional_context=emotional_context_for_titles,
@@ -345,18 +396,28 @@ class AvikaChat:
             title_list_str = "\n".join([
                 f"- {t['title']} (Category: {t['category']})"
                 for t in matching_titles
-            ]) if matching_titles else "" # Pass empty if no titles, prompt handles this
+            ]) if matching_titles else "" 
 
             prompt = self._construct_recommendation_prompt(user_input, title_list_str, emotional_context_for_titles, reflection_summary)
             llm_response = gemini_generate(prompt)
 
-            # Final safety check on generated recommendation
-            has_concerns, crisis_response = self.check_safety_concerns(llm_response, self.chat_history)
-            response = crisis_response if has_concerns else llm_response
+            has_concerns_llm, crisis_response_llm = self.check_safety_concerns(llm_response, self.chat_history)
+            response_text = crisis_response_llm if has_concerns_llm else llm_response
         
-        self.chat_history.append(f"{self.AVIKA_PREFIX}{response}")
+        else:
+            # --- Empathy Phase ---
+            # _get_emotional_context uses self.chat_history + user_input internally
+            emotional_themes = self._get_emotional_context(user_input) 
+            context_str = "\n\n".join(emotional_themes)
+            prompt = self._construct_empathy_prompt(user_input, context_str, recent_history_for_prompt)
+            llm_response = gemini_generate(prompt)
+
+            has_concerns_llm, crisis_response_llm = self.check_safety_concerns(llm_response, self.chat_history)
+            response_text = crisis_response_llm if has_concerns_llm else llm_response
+        
+        self.chat_history.append(f"{self.AVIKA_PREFIX}{response_text}")
         self.turn_number += 1
-        return response
+        return response_text
 
 def main():
     """Main function for running the chat application"""
