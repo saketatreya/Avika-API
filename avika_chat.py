@@ -103,9 +103,28 @@ class AvikaChat:
         )
         self.chat_history.append(f"{self.AVIKA_PREFIX}{self.INITIAL_GREETING}")
 
-    def _construct_empathy_prompt(self, user_input, context_str, recent_history):
-        # Adjusted to be less rigid and allow for more natural responses
-        return f"""
+    def _construct_empathy_prompt(self, user_input, context_str, recent_history, 
+                                is_short_input: bool, no_strong_themes: bool, is_stuck_early: bool):
+        guidance_on_ambiguity = ""
+        if (is_short_input and no_strong_themes) or is_stuck_early:
+            guidance_on_ambiguity = (
+                "\n\nIMPORTANT GUIDANCE FOR THIS TURN:\n"
+                "The user's input is brief or the conversation needs more substance to be truly helpful. "
+                "Your priority is to gently encourage the user to share more. You might say something like: \n"
+                "- \"I'd love to understand a bit more — can you tell me what's been weighing on you the most lately?\"\n"
+                "- \"To help me understand better, could you tell me a bit more about what's on your mind?\"\n"
+                "- \"I'm here to listen. Sometimes it helps to just start talking about what's on your mind, no matter how small it seems.\"\n"
+                "Make sure your response is a question that prompts them to elaborate."
+            )
+        else:
+            guidance_on_ambiguity = (
+                "\n\nGUIDANCE FOR THIS TURN:\n"
+                "- Reflect on their feelings.\n"
+                "- Offer a supportive statement.\n"
+                "- If it feels natural, ask a gentle follow-up question to understand better."
+            )
+
+        return f\"\"\"
         You are Avika, a mobile mental health chatbot. Your primary goal is to listen, understand, and respond with empathy.
         Keep responses concise (around 3-4 sentences).
         I am not a human, nor a replacement for professional care. If the user mentions serious harm to themselves or others, gently guide them to seek professional help.
@@ -117,15 +136,12 @@ class AvikaChat:
         {user_input}
 
         [EMOTIONAL THEMES DETECTED FROM KNOWLEDGE BASE]
-        {context_str}
+        {context_str if context_str else "No specific themes detected yet."}
+        {guidance_on_ambiguity}
 
-        Avika, respond with warmth and empathy. You can:
-        - Reflect on their feelings.
-        - Offer a supportive statement.
-        - If it feels natural, ask a gentle follow-up question to understand better.
-        - DO NOT recommend any resources or titles yet.
-        Focus on making the user feel heard and understood.
-        """.strip()
+        Focus on making the user feel heard and understood. DO NOT recommend any resources or titles yet.
+        Avika (respond according to the guidance for this turn):
+        \"\"\".strip()
 
     def _construct_recommendation_prompt(self, user_input, title_list_str, emotional_context_for_titles, reflection_summary):
         # Added reflection_summary and improved "no titles" message
@@ -361,11 +377,12 @@ class AvikaChat:
             if self._is_requesting_recommendation(user_input_lower):
                 attempt_recommendation = True
             elif self._has_sufficient_context_for_proactive_recommendation():
-                attempt_recommendation = True
+                # Check if we *just* had an ambiguity prompt, if so, maybe wait one more turn
+                # This is to avoid asking for more info and then immediately recommending
+                if not (self.chat_history[-2].startswith(self.AVIKA_PREFIX) and 
+                        ("understand a bit more" in self.chat_history[-2] or "tell me a bit more" in self.chat_history[-2])):
+                    attempt_recommendation = True
         
-        # Fallback: If many turns pass without clear signal, maybe ask to recommend?
-        # For now, this is not implemented to keep it simpler. Could be added if bot gets stuck in empathy.
-
         response_text = ""
 
         if attempt_recommendation:
@@ -406,10 +423,23 @@ class AvikaChat:
         
         else:
             # --- Empathy Phase ---
-            # _get_emotional_context uses self.chat_history + user_input internally
-            emotional_themes = self._get_emotional_context(user_input) 
+            emotional_themes = self._get_emotional_context(user_input)
             context_str = "\n\n".join(emotional_themes)
-            prompt = self._construct_empathy_prompt(user_input, context_str, recent_history_for_prompt)
+            
+            # Assess ambiguity for empathy prompt
+            is_short_input = len(user_input.split()) < 4
+            no_strong_themes = not emotional_themes
+            # is_stuck_early: True if it's turn 1 (second user interaction) and we don't have enough for proactive rec
+            is_stuck_early = (self.turn_number == 1 and not self._has_sufficient_context_for_proactive_recommendation())
+            
+            prompt = self._construct_empathy_prompt(
+                user_input, 
+                context_str, 
+                recent_history_for_prompt, 
+                is_short_input,
+                no_strong_themes,
+                is_stuck_early
+            )
             llm_response = gemini_generate(prompt)
 
             has_concerns_llm, crisis_response_llm = self.check_safety_concerns(llm_response, self.chat_history)
