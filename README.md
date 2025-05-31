@@ -251,4 +251,18 @@ This section details significant improvements made after the initial codebase se
 
 *   Reviewed and cleaned up `requirements.txt` to ensure only necessary packages are included. `langchain-text-splitters` is retained for its `RecursiveCharacterTextSplitter` used in `scripts/populate_db.py`, but the full `langchain` package was removed as it was not essential for current functionality.
 
+### 6. Granular Crisis Detection
+
+*   **Hybrid Approach**: The `check_safety_concerns` method in `avika_chat.py` now uses a hybrid approach for detecting safety concerns:
+    *   It retains the existing keyword-based matching for specific self-harm and harm-to-others phrases.
+    *   It incorporates a pre-trained Hugging Face Transformer model (`cardiffnlp/twitter-roberta-base-offensive`) to provide an additional layer of analysis. This model helps identify generally offensive or potentially concerning language that might not be caught by keywords alone.
+*   **Classifier Integration**:
+    *   The RoBERTa model is loaded during `AvikaChat` initialization.
+    *   User input (including recent conversational history) is tokenized and passed to the classifier.
+    *   If the classifier's "offensive" score for the input exceeds a configurable threshold (`SAFETY_CLASSIFIER_THRESHOLD`), it contributes to flagging a potential safety concern.
+*   **Combined Logic**: A concern is raised if *either* the keyword matching *or* the classifier (above threshold) indicates a potential issue.
+*   **Nuanced Logging**: The console log for safety alerts now specifies whether the alert was triggered by keywords, the classifier, or both, providing more insight into the detection.
+*   **Fallback Mechanism**: If the Hugging Face model fails to load for any reason, the system gracefully falls back to using only the keyword-based detection.
+*   **Limitations Note**: A note has been added acknowledging that distinguishing nuanced states like self-deprecating humor from genuine distress is a complex NLP challenge and the current classifier provides a general layer of safety rather than a perfect solution for such subtleties.
+
 These enhancements aim to create a more responsible, effective, and user-friendly chatbot experience.

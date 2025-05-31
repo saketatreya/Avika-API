@@ -7,6 +7,8 @@ from docx import Document
 from sentence_transformers import SentenceTransformer
 from chromadb.config import Settings
 from typing import Optional
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
 
 def load_avika_titles():
     """Load titles and categories directly from Avika_Titles.docx"""
@@ -84,6 +86,7 @@ class AvikaChat:
         "read", "watch", "listen", "resource", "tool", "help me find", "article"
     ]
     MIN_EMPATHY_TURNS = 1 # Ensure at least one turn of empathy by default
+    SAFETY_CLASSIFIER_THRESHOLD = 0.7 # Threshold for offensive content detection
 
     def __init__(self, model, avika_titles, title_embeddings, chroma_collection):
         self.model = model
@@ -102,6 +105,16 @@ class AvikaChat:
             "What's on your mind today?"
         )
         self.chat_history.append(f"{self.AVIKA_PREFIX}{self.INITIAL_GREETING}")
+
+        # Initialize safety classifier
+        try:
+            self.safety_tokenizer = AutoTokenizer.from_pretrained("cardiffnlp/twitter-roberta-base-offensive")
+            self.safety_model = AutoModelForSequenceClassification.from_pretrained("cardiffnlp/twitter-roberta-base-offensive")
+            print("✅ Safety classifier model loaded successfully.")
+        except Exception as e:
+            print(f"⚠️ Warning: Could not load safety classifier model. Falling back to keyword-only detection. Error: {e}")
+            self.safety_tokenizer = None
+            self.safety_model = None
 
     def _construct_empathy_prompt(self, user_input, context_str, recent_history, 
                                 is_short_input: bool, no_strong_themes: bool, is_stuck_early: bool):
@@ -187,17 +200,23 @@ class AvikaChat:
         """.strip()
 
     def check_safety_concerns(self, text_to_check, conversation_history=None):
-        """Check for safety concerns in user input, considering recent history."""
+        """Check for safety concerns in user input, considering recent history and a classifier.
+        
+        Note: Distinguishing humor from genuine distress is complex and this model may not always be accurate.
+        """
         # Combine current text with recent user messages for better context
         full_context_text = text_to_check
         if conversation_history:
             user_messages = [msg.replace(self.USER_PREFIX, "") for msg in conversation_history if msg.startswith(self.USER_PREFIX)]
             # Consider last 3 user messages plus current input
             context_window = " ".join(user_messages[-3:] + [text_to_check])
-            full_context_text = context_window.lower()
+            full_context_text = context_window # Keep case for classifier, convert to lower for keywords
         else:
-            full_context_text = text_to_check.lower()
+            full_context_text = text_to_check
 
+        full_context_text_lower = full_context_text.lower()
+
+        # 1. Keyword-based detection (existing logic)
         self_harm_indicators = [
             "kill myself", "suicide", "end my life", "hurt myself", "self harm",
             "don't want to live", "want to die", "cut myself", "overdose",
@@ -209,13 +228,43 @@ class AvikaChat:
             "violence", "attack", "destroy them", "hurt people"
         ]
         
-        found_self_harm = any(indicator in full_context_text for indicator in self_harm_indicators)
-        found_harm_others = any(indicator in full_context_text for indicator in harm_others_indicators)
+        found_self_harm_keyword = any(indicator in full_context_text_lower for indicator in self_harm_indicators)
+        found_harm_others_keyword = any(indicator in full_context_text_lower for indicator in harm_others_indicators)
+
+        # 2. Classifier-based detection
+        classifier_triggered_concern = False
+        if self.safety_model and self.safety_tokenizer:
+            try:
+                inputs = self.safety_tokenizer(full_context_text, return_tensors="pt", truncation=True, max_length=512)
+                with torch.no_grad():
+                    outputs = self.safety_model(**inputs)
+                scores = torch.softmax(outputs.logits, dim=1)
+                # Model: cardiffnlp/twitter-roberta-base-offensive
+                # Labels: 0 -> not offensive, 1 -> offensive
+                offensive_score = scores[0][1].item() 
+                if offensive_score > self.SAFETY_CLASSIFIER_THRESHOLD:
+                    classifier_triggered_concern = True
+                    print(f"Classifier detected potential concern. Offensive score: {offensive_score:.2f}")
+            except Exception as e:
+                print(f"⚠️ Error during safety classification: {e}. Relying on keyword detection for this turn.")
         
-        if found_self_harm or found_harm_others:
+        # Combine keyword and classifier results
+        # For determining the *type* of crisis (self-harm vs. harm-others), we'll rely on keywords for now,
+        # as the 'offensive' classifier is general.
+        is_critical_concern = (found_self_harm_keyword or found_harm_others_keyword or classifier_triggered_concern)
+        
+        if is_critical_concern:
             # Log escalation for human review (simulated)
-            print(f"SAFETY ALERT: Potential crisis detected. User history hint: {full_context_text[-100:]}. Flag for human review.")
-            return True, self._get_crisis_response(found_self_harm, found_harm_others)
+            alert_reason = []
+            if found_self_harm_keyword: alert_reason.append("self-harm keywords")
+            if found_harm_others_keyword: alert_reason.append("harm-others keywords")
+            if classifier_triggered_concern and not (found_self_harm_keyword or found_harm_others_keyword):
+                 alert_reason.append(f"classifier (score: {offensive_score:.2f})") # type: ignore
+            
+            print(f"SAFETY ALERT: Potential crisis detected (Reason: {', '.join(alert_reason)}). User history hint: {full_context_text[-100:]}. Flag for human review.")
+            # Determine response type based on keywords primarily for specific crisis lines
+            return True, self._get_crisis_response(found_self_harm_keyword, found_harm_others_keyword)
+            
         return False, None
 
     def _get_crisis_response(self, is_self_harm, is_harm_others):
