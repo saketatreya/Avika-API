@@ -135,6 +135,49 @@ async def health_check():
         return {"status": "unhealthy", "reason": "Core components not initialized"}
     return {"status": "healthy", "sessions_active": len(chat_sessions)}
 
+class ResetResponse(BaseModel):
+    message: str
+    initial_greeting: str
+    session_id: str
+
+@app.post("/reset", response_model=ResetResponse)
+async def reset_chat_session(request: ChatRequest): # Reusing ChatRequest for session_id, message is ignored
+    if INITIALIZATION_ERROR:
+        raise HTTPException(status_code=503, detail=f"Service Unavailable: {INITIALIZATION_ERROR}")
+    if not S_MODEL or not AVIKA_TITLES_DATA or not CHROMA_COLLECTION_INSTANCE:
+        missing_components = []
+        if not S_MODEL: missing_components.append("Sentence Model")
+        if not AVIKA_TITLES_DATA: missing_components.append("Avika Titles")
+        if not CHROMA_COLLECTION_INSTANCE: missing_components.append("Chroma Collection")
+        detail_msg = f"Service Unavailable: Core components ({', '.join(missing_components)}) not initialized."
+        raise HTTPException(status_code=503, detail=detail_msg)
+
+    session_id = request.session_id
+    if not session_id or session_id not in chat_sessions:
+        # If session doesn't exist, we can create a new one and reset it, 
+        # or return an error. For simplicity, let's create one.
+        new_session_id = str(os.urandom(16).hex())
+        session_id = new_session_id
+        print(f"Creating and resetting new chat session: {session_id}")
+        chat_sessions[session_id] = AvikaChat(
+            model=S_MODEL,
+            avika_titles=AVIKA_TITLES_DATA,
+            title_embeddings=TITLE_EMBEDDINGS_DATA,
+            chroma_collection=CHROMA_COLLECTION_INSTANCE
+        )
+        # The AvikaChat __init__ already sets up the initial greeting.
+        initial_greeting = chat_sessions[session_id].INITIAL_GREETING
+    else:
+        print(f"Resetting existing chat session: {session_id}")
+        current_chat_instance = chat_sessions[session_id]
+        initial_greeting = current_chat_instance.reset() # reset() returns the initial greeting
+
+    return ResetResponse(
+        message="Chat session has been reset.",
+        initial_greeting=initial_greeting,
+        session_id=session_id
+    )
+
 if __name__ == "__main__":
     if INITIALIZATION_ERROR:
         print(f"Cannot start server due to initialization error: {INITIALIZATION_ERROR}")

@@ -81,10 +81,6 @@ def gemini_generate(prompt):
         return "I'm currently unable to connect to my services. Please check your internet connection and try again."
 
 class AvikaChat:
-    RECOMMENDATION_KEYWORDS = [
-        "recommend", "suggest", "book", "video", "song", "audio", "music",
-        "read", "watch", "listen", "resource", "tool", "help me find", "article"
-    ]
     MIN_EMPATHY_TURNS = 1 # Ensure at least one turn of empathy by default
     SAFETY_CLASSIFIER_THRESHOLD = 0.7 # Threshold for offensive content detection
 
@@ -95,6 +91,9 @@ class AvikaChat:
         self.chroma_collection = chroma_collection
         self.chat_history = []
         self.turn_number = 0
+        self.recommendation_offered_in_last_turn = False
+        self.avika_just_asked_for_clarification = False # New flag
+        self.avika_just_said_no_titles_found = False      # New flag
         # Constants for persona
         self.USER_PREFIX = "User: "
         self.AVIKA_PREFIX = "Avika: "
@@ -116,28 +115,70 @@ class AvikaChat:
             self.safety_tokenizer = None
             self.safety_model = None
 
-    def _construct_empathy_prompt(self, user_input, context_str, recent_history, 
-                                is_short_input: bool, no_strong_themes: bool, is_stuck_early: bool):
+    def _construct_empathy_prompt(self, user_input, context_str, recent_history,
+                                is_short_input: bool, no_strong_themes: bool, is_stuck_early: bool,
+                                user_is_resistant: bool = False):
         guidance_on_ambiguity = ""
-        if (is_short_input and no_strong_themes) or is_stuck_early:
+        prompt_variation_guidance = "\\\\n- Try to vary your empathetic statements. Avoid starting with the exact same phrase in consecutive turns."
+
+        if user_is_resistant:
+            avika_last_response_was_recommendation = False
+            # Check if Avika's last message in history was a recommendation
+            if len(self.chat_history) >= 1: # Current user input is already appended, so Avika's last is chat_history[-2]
+                # Check the actual last Avika message before the current user input
+                # The user's current input is self.chat_history[-1]
+                # Avika's previous response is self.chat_history[-2]
+                if (self.chat_history[-2].startswith(self.AVIKA_PREFIX) and 
+                   ("I recommend trying out" in self.chat_history[-2] or "from our" in self.chat_history[-2])): # Heuristic for recommendation
+                    avika_last_response_was_recommendation = True
+            
+            specific_resistance_guidance = ""
+            if avika_last_response_was_recommendation:
+                specific_resistance_guidance = (
+                    "The user seems to be questioning or skeptical about the recommendation you just made. "
+                    "Acknowledge their question/skepticism directly. You might say something like:\\\\n"
+                    "- \\\"That's a fair question. You're wondering why this particular resource might be helpful for what you're going through, is that right?\\\"\\\\n"
+                    "- \\\"I hear you. It makes sense to want to know if a suggestion is really a good fit before spending time on it. What are your initial thoughts or concerns about it?\\\"\\\\n"
+                    "- \\\"It sounds like you're not quite convinced that suggestion is for you. Help me understand a bit more – what feels off, or what kind of support were you hoping for at this moment?\\\"\\\\n"
+                    "Your goal is to understand their reservations about the specific suggestion and validate their inquiry."
+                )
+            else:
+                specific_resistance_guidance = (
+                    "The user is expressing feelings of hopelessness or broader resistance to help. "
+                    "Your priority is to validate these feelings deeply. Acknowledge that things feel tough or pointless for them right now. "
+                    "DO NOT offer solutions or try to cheer them up. Instead, you might say something like:\\\\n"
+                    "- \\\"It sounds incredibly frustrating when it feels like nothing is working.\\\"\\\\n"
+                    "- \\\"I understand why you might feel skeptical or that things are pointless right now.\\\"\\\\n"
+                    "- \\\"It's okay to feel that way. Can you tell me more about what makes it feel so overwhelming?\\\"\\\\n"
+                    "Let them know their feelings are heard without trying to change them immediately. Focus on gentle exploration if appropriate."
+                )
+            
             guidance_on_ambiguity = (
-                "\n\nIMPORTANT GUIDANCE FOR THIS TURN:\n"
+                "\\\\n\\\\nIMPORTANT GUIDANCE FOR THIS TURN (USER IS RESISTANT):\\\\n"
+                f"{specific_resistance_guidance}"
+                f"{prompt_variation_guidance}"
+            )
+        elif (is_short_input and no_strong_themes) or is_stuck_early:
+            guidance_on_ambiguity = (
+                "\\\\n\\\\nIMPORTANT GUIDANCE FOR THIS TURN (NEEDS MORE INFO):\\\\n"
                 "The user's input is brief or the conversation needs more substance to be truly helpful. "
-                "Your priority is to gently encourage the user to share more. You might say something like: \n"
-                "- \"I'd love to understand a bit more — can you tell me what's been weighing on you the most lately?\"\n"
-                "- \"To help me understand better, could you tell me a bit more about what's on your mind?\"\n"
-                "- \"I'm here to listen. Sometimes it helps to just start talking about what's on your mind, no matter how small it seems.\"\n"
+                "Your priority is to gently encourage the user to share more. You might say something like: \\\\n"
+                "- \\\"I'd love to understand a bit more — can you tell me what's been weighing on you the most lately?\\\\n"
+                "- \\\"To help me understand better, could you tell me a bit more about what's on your mind?\\\\n"
+                "- \\\"I'm here to listen. Sometimes it helps to just start talking about what's on your mind, no matter how small it seems.\\\\n"
                 "Make sure your response is a question that prompts them to elaborate."
+                f"{prompt_variation_guidance}"
             )
         else:
             guidance_on_ambiguity = (
-                "\n\nGUIDANCE FOR THIS TURN:\n"
-                "- Reflect on their feelings.\n"
-                "- Offer a supportive statement.\n"
-                "- If it feels natural, ask a gentle follow-up question to understand better."
+                "\\\\n\\\\nGUIDANCE FOR THIS TURN (GENERAL EMPATHY):\\\\n"
+                "- Reflect on their feelings.\\\\n"
+                "- Offer a supportive statement that validates their experience.\\\\n"
+                "- If it feels natural, ask a gentle follow-up question to understand better or invite them to share more."
+                f"{prompt_variation_guidance}"
             )
 
-        return f\"\"\"
+        return f"""
         You are Avika, a mobile mental health chatbot. Your primary goal is to listen, understand, and respond with empathy.
         Keep responses concise (around 3-4 sentences).
         I am not a human, nor a replacement for professional care. If the user mentions serious harm to themselves or others, gently guide them to seek professional help.
@@ -154,7 +195,7 @@ class AvikaChat:
 
         Focus on making the user feel heard and understood. DO NOT recommend any resources or titles yet.
         Avika (respond according to the guidance for this turn):
-        \"\"\".strip()
+        """
 
     def _construct_recommendation_prompt(self, user_input, title_list_str, emotional_context_for_titles, reflection_summary):
         # Added reflection_summary and improved "no titles" message
@@ -358,9 +399,45 @@ class AvikaChat:
         
         return matching_titles
 
-    def _is_requesting_recommendation(self, user_input_lower: str) -> bool:
-        """Check if user input explicitly asks for a recommendation."""
-        return any(keyword in user_input_lower for keyword in self.RECOMMENDATION_KEYWORDS)
+    def _llm_is_requesting_recommendation(self, user_input: str, conversation_history_str: str) -> bool:
+        """Determines if the user is asking for a recommendation using an LLM call."""
+        prompt = f"""
+        Analyze the following user message within the broader conversation. The user is interacting with Avika, a mental health chatbot.
+        Does the user's LATEST MESSAGE primarily ask for a resource, suggestion, book, video, song, audio, or similar actionable help?
+        Respond with only one word: YES or NO.
+
+        CONVERSATION HISTORY (summary):
+        {conversation_history_str}
+
+        USER'S LATEST MESSAGE:
+        {user_input}
+
+        Analysis (YES or NO):
+        """
+        
+        response = gemini_generate(prompt)
+        # print(f"[LLM REC CHECK] User: '{user_input}', LLM Raw: '{response}'")
+        return response.strip().upper() == "YES"
+
+    def _llm_is_user_resistant(self, user_input: str, conversation_history_str: str) -> bool:
+        """Determines if the user is expressing resistance using an LLM call."""
+        prompt = f"""
+        Analyze the following user message within the broader conversation. The user is interacting with Avika, a mental health chatbot.
+        Does the user's LATEST MESSAGE express strong feelings of hopelessness, skepticism about getting help, dismiss previous suggestions, or directly state that help/suggestions are not working (e.g., saying 'nothing helps', 'it's pointless', 'I don't want to')?
+        Respond with only one word: YES or NO.
+
+        CONVERSATION HISTORY (summary):
+        {conversation_history_str}
+
+        USER'S LATEST MESSAGE:
+        {user_input}
+
+        Analysis (YES or NO):
+        """
+
+        response = gemini_generate(prompt)
+        # print(f"[LLM RESIST CHECK] User: '{user_input}', LLM Raw: '{response}'")
+        return response.strip().upper() == "YES"
 
     def _has_sufficient_context_for_proactive_recommendation(self) -> bool:
         """Heuristic to check if conversation context might be rich enough for a recommendation."""
@@ -420,83 +497,106 @@ class AvikaChat:
 
         self.chat_history.append(f"{self.USER_PREFIX}{user_input}")
         recent_history_for_prompt = self.chat_history[-(max_turns_for_history*2):]
+        conversation_context_for_llm_checks = " \\n".join(self.chat_history[-(max_turns_for_history*2):]) # Use a snippet of history for LLM checks
 
+        user_is_resistant = self._llm_is_user_resistant(user_input, conversation_context_for_llm_checks)
+        
         attempt_recommendation = False
-        if self.turn_number >= self.MIN_EMPATHY_TURNS:
-            if self._is_requesting_recommendation(user_input_lower):
+        # Previous state flags are checked here
+        if (not user_is_resistant and 
+           self.turn_number >= self.MIN_EMPATHY_TURNS and 
+           not self.recommendation_offered_in_last_turn and 
+           not self.avika_just_asked_for_clarification and 
+           not self.avika_just_said_no_titles_found):
+            if self._llm_is_requesting_recommendation(user_input, conversation_context_for_llm_checks):
                 attempt_recommendation = True
             elif self._has_sufficient_context_for_proactive_recommendation():
-                # Check if we *just* had an ambiguity prompt, if so, maybe wait one more turn
-                # This is to avoid asking for more info and then immediately recommending
-                if not (self.chat_history[-2].startswith(self.AVIKA_PREFIX) and 
-                        ("understand a bit more" in self.chat_history[-2] or "tell me a bit more" in self.chat_history[-2])):
-                    attempt_recommendation = True
+                attempt_recommendation = True # Simpler proactive check for now if conditions met
         
         response_text = ""
+        # Reset flags before new response is generated
+        self.recommendation_offered_in_last_turn = False 
+        self.avika_just_asked_for_clarification = False
+        self.avika_just_said_no_titles_found = False
 
         if attempt_recommendation:
-            # --- Recommendation Phase ---
+            # --- Recommendation Phase --- 
             # Safety check on full user context before making recommendations
             full_user_dialogue_for_safety = " ".join([msg.replace(self.USER_PREFIX, "") for msg in self.chat_history if msg.startswith(self.USER_PREFIX)])
-            has_concerns, crisis_response = self.check_safety_concerns(full_user_dialogue_for_safety, self.chat_history)
-            if has_concerns:
-                if not self.chat_history[-1].startswith(self.AVIKA_PREFIX) or crisis_response not in self.chat_history[-1]:
-                    self.chat_history.append(f"{self.AVIKA_PREFIX}{crisis_response}")
+            has_concerns_rec, crisis_response_rec = self.check_safety_concerns(full_user_dialogue_for_safety, self.chat_history)
+            if has_concerns_rec:
+                if not self.chat_history[-1].startswith(self.AVIKA_PREFIX) or crisis_response_rec not in self.chat_history[-1]:
+                    self.chat_history.append(f"{self.AVIKA_PREFIX}{crisis_response_rec}")
                 self.turn_number += 1
-                return crisis_response
-
+                return crisis_response_rec
+            
             reflection_summary = self._generate_reflection_summary()
             content_preference = self._get_content_preference(user_input_lower)
-            
-            # Use the full user dialogue for title matching context
             emotional_context_for_titles = " ".join([
                 msg.replace(self.USER_PREFIX, "") for msg in self.chat_history if msg.startswith(self.USER_PREFIX)
             ])
-
             matching_titles = self._get_relevant_titles(
                 emotional_context=emotional_context_for_titles,
                 content_type=content_preference,
                 top_k=5
             )
-            
-            title_list_str = "\n".join([
+            title_list_str = "\\n".join([
                 f"- {t['title']} (Category: {t['category']})"
                 for t in matching_titles
-            ]) if matching_titles else "" 
+            ]) if matching_titles else ""
 
             prompt = self._construct_recommendation_prompt(user_input, title_list_str, emotional_context_for_titles, reflection_summary)
             llm_response = gemini_generate(prompt)
 
-            has_concerns_llm, crisis_response_llm = self.check_safety_concerns(llm_response, self.chat_history)
-            response_text = crisis_response_llm if has_concerns_llm else llm_response
+            no_titles_guidance_substring = "I wasn't able to find a specific resource that perfectly matches"
+            if no_titles_guidance_substring in llm_response:
+                response_text = llm_response
+                self.avika_just_said_no_titles_found = True # Set flag
+            else:
+                has_concerns_llm, crisis_response_llm = self.check_safety_concerns(llm_response, self.chat_history)
+                response_text = crisis_response_llm if has_concerns_llm else llm_response
+                self.recommendation_offered_in_last_turn = True
         
         else:
             # --- Empathy Phase ---
             emotional_themes = self._get_emotional_context(user_input)
-            context_str = "\n\n".join(emotional_themes)
-            
-            # Assess ambiguity for empathy prompt
+            context_str = "\\n\\n".join(emotional_themes)
             is_short_input = len(user_input.split()) < 4
             no_strong_themes = not emotional_themes
-            # is_stuck_early: True if it's turn 1 (second user interaction) and we don't have enough for proactive rec
             is_stuck_early = (self.turn_number == 1 and not self._has_sufficient_context_for_proactive_recommendation())
             
+            # If Avika just asked for clarification or said no titles, and user isn't resistant, lean to ambiguity prompt
+            if (self.avika_just_asked_for_clarification or self.avika_just_said_no_titles_found) and not user_is_resistant:
+                 is_short_input = True 
+                 no_strong_themes = True 
+
             prompt = self._construct_empathy_prompt(
-                user_input, 
-                context_str, 
-                recent_history_for_prompt, 
-                is_short_input,
-                no_strong_themes,
-                is_stuck_early
+                user_input, context_str, recent_history_for_prompt, 
+                is_short_input, no_strong_themes, is_stuck_early, user_is_resistant
             )
             llm_response = gemini_generate(prompt)
-
             has_concerns_llm, crisis_response_llm = self.check_safety_concerns(llm_response, self.chat_history)
             response_text = crisis_response_llm if has_concerns_llm else llm_response
+
+            # Check if this empathy response is asking for clarification to set flag for next turn
+            clarification_phrases = ["understand a bit more", "tell me a bit more", "what's been weighing on you", "elaborate"]
+            if any(phrase in llm_response.lower() for phrase in clarification_phrases):
+                self.avika_just_asked_for_clarification = True # Set flag
         
         self.chat_history.append(f"{self.AVIKA_PREFIX}{response_text}")
         self.turn_number += 1
         return response_text
+
+    def reset(self):
+        """Resets the conversation state to the initial greeting."""
+        self.chat_history = []
+        self.turn_number = 0
+        self.recommendation_offered_in_last_turn = False
+        self.avika_just_asked_for_clarification = False
+        self.avika_just_said_no_titles_found = False
+        self.chat_history.append(f"{self.AVIKA_PREFIX}{self.INITIAL_GREETING}")
+        print("Chat session reset.") # Server-side log
+        return self.INITIAL_GREETING
 
 def main():
     """Main function for running the chat application"""

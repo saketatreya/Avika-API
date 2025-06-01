@@ -20,6 +20,8 @@
         #user-input { flex-grow: 1; padding: 10px; border: 1px solid #ccc; border-radius: 20px; margin-right: 10px; }
         #send-button { padding: 10px 20px; background-color: #7E57C2; color: white; border: none; border-radius: 20px; cursor: pointer; }
         #send-button:hover { background-color: #5E35B1; }
+        #reset-button { margin-left: 10px; padding: 10px 15px; background-color: #FFA000; color: white; border: none; border-radius: 20px; cursor: pointer; }
+        #reset-button:hover { background-color: #FF8F00; }
         .loading-indicator { text-align: center; padding: 10px; color: #777; }
         .error-message { color: red; font-style: italic; text-align: center; padding: 10px; }
     </style>
@@ -35,6 +37,7 @@
         <div id="chat-input-area">
             <input type="text" id="user-input" placeholder="Type your message...">
             <button id="send-button">Send</button>
+            <button id="reset-button">Reset</button>
         </div>
     </div>
 
@@ -42,6 +45,7 @@
         const chatMessages = document.getElementById('chat-messages');
         const userInput = document.getElementById('user-input');
         const sendButton = document.getElementById('send-button');
+        const resetButton = document.getElementById('reset-button'); // Get reset button
         let sessionId = null; // To store the session ID
 
         // Function to add a message to the chat window
@@ -143,22 +147,115 @@
             }
         }
 
+        // Function to reset the conversation
+        async function resetConversation() {
+            console.log("Resetting conversation...");
+            showLoading(); // Optional: show loading while resetting
+            userInput.disabled = true;
+            sendButton.disabled = true;
+            resetButton.disabled = true;
+
+            try {
+                const requestBody = { message: "user_initiated_reset", session_id: sessionId }; 
+                
+                const response = await fetch('http://localhost:8000/reset', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestBody),
+                });
+
+                hideLoading();
+                userInput.disabled = false;
+                sendButton.disabled = false;
+                resetButton.disabled = false;
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ detail: "Failed to parse error response." }));
+                    console.error('API Reset Error Response:', errorData);
+                    showError(`Error resetting: ${response.status} - ${errorData.detail || "Could not reset conversation."}`);
+                    return;
+                }
+
+                const data = await response.json();
+                chatMessages.innerHTML = ''; // Clear all messages from the display
+                if (data.initial_greeting) {
+                    addMessage('Avika', data.initial_greeting, false);
+                    sessionId = data.session_id; // Should be the same or a new one if it didn't exist
+                    console.log("Conversation reset. New/current session ID:", sessionId);
+                } else {
+                    showError('Received an unexpected response after reset.');
+                }
+
+            } catch (error) {
+                hideLoading();
+                userInput.disabled = false;
+                sendButton.disabled = false;
+                resetButton.disabled = false;
+                console.error('Network or other error during reset:', error);
+                showError('Could not reach Avika to reset. Please ensure the API server is running.');
+            }
+        }
+
         sendButton.addEventListener('click', sendMessage);
         userInput.addEventListener('keypress', function(event) {
             if (event.key === 'Enter') {
                 sendMessage();
             }
         });
+        resetButton.addEventListener('click', resetConversation);
 
-        // Display initial greeting from Avika (if your API supports an initial greeting or if we simulate it)
-        // For now, we'll assume the user starts the conversation.
-        // If Avika's first message is fixed, we can add it here.
-        // Example: addMessage('Avika', "Hello! I'm Avika. What's on your mind?", false);
-        // This needs to align with how your AvikaChat class initializes the conversation history.
-        // The AvikaChat class now appends the initial greeting. To display it:
-        // 1. We could make a GET /initial_greeting endpoint
-        // 2. Or, if the first /chat POST with a new session_id returns it, handle it there.
-        // For simplicity here, the first message from Avika will be its actual first response.
+        // On initial load, try to get a session and initial greeting
+        // This can be done by sending an empty message or having a dedicated endpoint.
+        // For now, the first user message will establish the session.
+        // However, to make reset robust, let's ensure session_id is initialized if possible.
+        // A simple way: call /chat with an empty message if no session_id to get one + first greeting.
+        // Or, call reset itself to initialize if no session_id.
+
+        async function initializeChat() {
+            if (!sessionId) {
+                console.log("No session ID, attempting to initialize/reset chat for initial greeting.");
+                // We call reset without a session_id, the backend will create one.
+                showLoading();
+                userInput.disabled = true;
+                sendButton.disabled = true;
+                resetButton.disabled = true;
+                try {
+                    const response = await fetch('http://localhost:8000/reset', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ message: "initial_page_load_reset", session_id: null }) 
+                    });
+                    hideLoading();
+                    userInput.disabled = false;
+                    sendButton.disabled = false;
+                    resetButton.disabled = false;
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.initial_greeting && data.session_id) {
+                            sessionId = data.session_id;
+                            addMessage('Avika', data.initial_greeting, false);
+                            console.log("Chat initialized with session:", sessionId);
+                        } else {
+                            showError("Could not get initial greeting from Avika.");
+                        }
+                    } else {
+                         const errorData = await response.json().catch(() => ({ detail: "Failed to initialize chat." }));
+                        showError(`Init Error: ${response.status} - ${errorData.detail}`);
+                    }
+                } catch (e) {
+                    hideLoading();
+                    userInput.disabled = false;
+                    sendButton.disabled = false;
+                    resetButton.disabled = false;
+                    showError("Failed to connect to Avika for initialization.");
+                    console.error("Initialization fetch error:", e);
+                }
+            }
+        }
+        window.addEventListener('load', initializeChat);
 
     </script>
 </body>

@@ -265,4 +265,24 @@ This section details significant improvements made after the initial codebase se
 *   **Fallback Mechanism**: If the Hugging Face model fails to load for any reason, the system gracefully falls back to using only the keyword-based detection.
 *   **Limitations Note**: A note has been added acknowledging that distinguishing nuanced states like self-deprecating humor from genuine distress is a complex NLP challenge and the current classifier provides a general layer of safety rather than a perfect solution for such subtleties.
 
+### 7. Advanced Conversational Flow & Interaction Logic (Reduced Keyword Reliance)
+
+*   **LLM-Powered Intent Detection**:
+    *   Replaced keyword-based lists (`RECOMMENDATION_KEYWORDS`, `RESISTANCE_KEYWORDS`) with direct LLM calls (`_llm_is_requesting_recommendation`, `_llm_is_user_resistant` in `avika_chat.py`).
+    *   These methods prompt the Gemini model to analyze user input in conversational context to determine if they are asking for a resource or expressing resistance/hopelessness.
+    *   This allows for more natural language understanding and makes the system less brittle to variations in user phrasing.
+*   **State-Based Flow Control for Transitions**:
+    *   Introduced boolean state flags within the `AvikaChat` class: `recommendation_offered_in_last_turn`, `avika_just_asked_for_clarification`, and `avika_just_said_no_titles_found`.
+    *   These flags are set based on Avika's previous actions and are used in the `chat` method to make more intelligent decisions about when to transition to empathy or attempt a recommendation.
+    *   This replaces previous logic that relied on string-matching Avika's last response, making the flow control more robust and preventing awkward immediate re-recommendations after clarification requests or if no titles were found.
+*   **Nuanced Resistance Handling in Empathy Prompts**:
+    *   The `_construct_empathy_prompt` method now dynamically adjusts its guidance to the LLM if the user is flagged as resistant.
+    *   It further differentiates if the resistance is a direct response to a recommendation Avika just made (e.g., user says "why should I read that?"). In such cases, the LLM is prompted to acknowledge the specific skepticism about the resource and explore the user's reservations directly.
+    *   If resistance is more general, broader empathetic validation is prompted.
+*   **Conversation Reset Functionality**:
+    *   Added a `reset()` method to the `AvikaChat` class to clear conversation history and reset all state flags.
+    *   Exposed this via a new `/reset` POST endpoint in `api_server.py`.
+    *   The frontend (`frontend/index.html`) now includes a "Reset Conversation" button that calls this endpoint.
+    *   The frontend also now initializes the chat by calling `/reset` on page load to fetch the initial greeting and session ID, ensuring a clean start.
+
 These enhancements aim to create a more responsible, effective, and user-friendly chatbot experience.
