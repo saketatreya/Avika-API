@@ -8,17 +8,24 @@ A FastAPI-based chatbot API that provides mental wellness support by recommendin
 
 ### 1. Environment Variables
 
-Before running the application, you need to set up the following environment variables. You can create a `.env` file in the root directory:
+Create a `.env` file in the root project directory by copying the example below. The application will automatically load these variables on startup.
 
-```bash
-# Required
+```dotenv
+# .env
+
+# Required API Key for Google Gemini
 GEMINI_API_KEY=your_gemini_api_key_here
 
-# Optional (with defaults)
-AVIKA_TITLES_PATH=./Avika_Titles.docx
-CHROMA_DB_PATH=./chroma_storage
-AVIKA_DOCS_PATH=./Avika_Docs/
+# Optional: Paths for data files (defaults are shown)
+# AVIKA_TITLES_PATH=./Avika_Titles.docx
+# CHROMA_DB_PATH=./chroma_storage
+# AVIKA_DOCS_PATH=./Avika_Docs/
 ```
+
+*   `GEMINI_API_KEY`: **Required.** Your API key for Google Gemini.
+*   `AVIKA_TITLES_PATH`: Optional. Path to the `Avika_Titles.docx` file. Defaults to `./Avika_Titles.docx`.
+*   `CHROMA_DB_PATH`: Optional. Path to the directory where ChromaDB will store its data. Defaults to `./chroma_storage`.
+*   `AVIKA_DOCS_PATH`: Optional. Path to the folder containing DOCX documents for the knowledge base. Defaults to `./Avika_Docs/`.
 
 ### 2. Install Dependencies
 
@@ -38,15 +45,19 @@ python scripts/populate_db.py
 
 **Simple and fast for development/testing:**
 
-```bash
-# 1. Set environment variables
-export GEMINI_API_KEY="your_api_key"
-
-# 2. Install and run
-pip install -r requirements.txt
-python scripts/populate_db.py
-uvicorn api_server:app --host 0.0.0.0 --port 8000 --reload
-```
+1.  **Create `.env` file**: Copy the template from "Environment Variables" section above and fill in your `GEMINI_API_KEY`.
+2.  **Install dependencies**:
+    ```bash
+    pip install -r requirements.txt
+    ```
+3.  **Populate the vector database** (if not already done or if documents changed):
+    ```bash
+    python scripts/populate_db.py
+    ```
+4.  **Run the API server**:
+    ```bash
+    uvicorn api_server:app --host 0.0.0.0 --port 8000 --reload
+    ```
 
 ### Option 2: Docker (For Production/Isolation)
 

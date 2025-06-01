@@ -5,10 +5,12 @@ import numpy as np
 import google.generativeai as genai
 from docx import Document
 from sentence_transformers import SentenceTransformer
-from chromadb.config import Settings
 from typing import Optional
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
+from dotenv import load_dotenv
+
+load_dotenv() # Load environment variables from .env file
 
 def load_avika_titles():
     """Load titles and categories directly from Avika_Titles.docx"""
@@ -39,7 +41,7 @@ def load_avika_titles():
             
             titles_data.append({
                 "title": clean_title,
-                "category": current_category if current_category else "Uncategorized", # Default category
+                "category": current_category if current_category else "Uncategorized",
                 "embedding_text": embedding_text
             })
     if not titles_data:
@@ -92,8 +94,8 @@ class AvikaChat:
         self.chat_history = []
         self.turn_number = 0
         self.recommendation_offered_in_last_turn = False
-        self.avika_just_asked_for_clarification = False # New flag
-        self.avika_just_said_no_titles_found = False      # New flag
+        self.avika_just_asked_for_clarification = False
+        self.avika_just_said_no_titles_found = False
         # Constants for persona
         self.USER_PREFIX = "User: "
         self.AVIKA_PREFIX = "Avika: "
@@ -365,7 +367,7 @@ class AvikaChat:
         
     def _get_relevant_titles(self, emotional_context, content_type=None, top_k=5):
         """Get semantically relevant titles based on emotional context (internal helper method)"""
-        if not self.title_embeddings: # Handle case with no titles/embeddings
+        if not self.title_embeddings:
             return []
 
         context_embedding = self.model.encode(emotional_context)
@@ -453,7 +455,7 @@ class AvikaChat:
         # Perform a light check for any relevant title
         potential_titles = self._get_relevant_titles(
             emotional_context=full_user_context,
-            top_k=1 # We only need to know if at least one potentially relevant title exists
+            top_k=1
         )
         return bool(potential_titles)
 
@@ -551,7 +553,7 @@ class AvikaChat:
             no_titles_guidance_substring = "I wasn't able to find a specific resource that perfectly matches"
             if no_titles_guidance_substring in llm_response:
                 response_text = llm_response
-                self.avika_just_said_no_titles_found = True # Set flag
+                self.avika_just_said_no_titles_found = True
             else:
                 has_concerns_llm, crisis_response_llm = self.check_safety_concerns(llm_response, self.chat_history)
                 response_text = crisis_response_llm if has_concerns_llm else llm_response
@@ -581,7 +583,7 @@ class AvikaChat:
             # Check if this empathy response is asking for clarification to set flag for next turn
             clarification_phrases = ["understand a bit more", "tell me a bit more", "what's been weighing on you", "elaborate"]
             if any(phrase in llm_response.lower() for phrase in clarification_phrases):
-                self.avika_just_asked_for_clarification = True # Set flag
+                self.avika_just_asked_for_clarification = True
         
         self.chat_history.append(f"{self.AVIKA_PREFIX}{response_text}")
         self.turn_number += 1
@@ -595,11 +597,12 @@ class AvikaChat:
         self.avika_just_asked_for_clarification = False
         self.avika_just_said_no_titles_found = False
         self.chat_history.append(f"{self.AVIKA_PREFIX}{self.INITIAL_GREETING}")
-        print("Chat session reset.") # Server-side log
+        print("Chat session reset.")
         return self.INITIAL_GREETING
 
 def main():
     """Main function for running the chat application"""
+    import traceback # Moved import traceback to top of function
     if not os.getenv("GEMINI_API_KEY"):
         print("❌ Error: GEMINI_API_KEY environment variable not set. Please set it and try again.")
         return
@@ -643,7 +646,7 @@ def main():
                 print("\n🧠 Avika: Take care! I'm always here if you need to talk.")
                 break
             except Exception as e:
-                import traceback
+                # import traceback # Removed from here
                 print(f"\n❌ Unexpected Error: {str(e)}")
                 traceback.print_exc() 
                 print("🧠 Avika: I'm having a problem right now. Please try again, or restart if it continues.\n")
@@ -653,7 +656,7 @@ def main():
     except ValueError as val_error:
         print(f"❌ Configuration Error: {str(val_error)}")
     except Exception as e:
-        import traceback
+        # import traceback # Removed from here
         print(f"\n❌ Critical Initialization Error: {str(e)}")
         traceback.print_exc()
 

@@ -6,6 +6,10 @@ import uvicorn
 import os # For environment variables
 import chromadb
 from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
+import traceback # Added traceback import here
+
+load_dotenv() # Load environment variables from .env file
 
 # Import the refactored AvikaChat class and loader
 from avika_chat import AvikaChat, load_avika_titles
@@ -84,22 +88,20 @@ chat_sessions: Dict[str, AvikaChat] = {}
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
     if INITIALIZATION_ERROR:
-        # Prevent operation if global components failed to initialize
         raise HTTPException(status_code=503, detail=f"Service Unavailable: {INITIALIZATION_ERROR}")
-    if not S_MODEL or not AVIKA_TITLES_DATA or not CHROMA_COLLECTION_INSTANCE:
-        # This check is redundant if INITIALIZATION_ERROR is comprehensive, but good for belt-and-suspenders
-        missing_components = []
-        if not S_MODEL: missing_components.append("Sentence Model")
-        if not AVIKA_TITLES_DATA: missing_components.append("Avika Titles")
-        if not CHROMA_COLLECTION_INSTANCE: missing_components.append("Chroma Collection")
-        detail_msg = f"Service Unavailable: Core components ({', '.join(missing_components)}) not initialized."
-        raise HTTPException(status_code=503, detail=detail_msg)
+    # Simplified error checking: Relies on INITIALIZATION_ERROR to be comprehensive
+    # if not S_MODEL or not AVIKA_TITLES_DATA or not CHROMA_COLLECTION_INSTANCE:
+    #     missing_components = []
+    #     if not S_MODEL: missing_components.append("Sentence Model")
+    #     if not AVIKA_TITLES_DATA: missing_components.append("Avika Titles")
+    #     if not CHROMA_COLLECTION_INSTANCE: missing_components.append("Chroma Collection")
+    #     detail_msg = f"Service Unavailable: Core components ({', '.join(missing_components)}) not initialized."
+    #     raise HTTPException(status_code=503, detail=detail_msg)
 
     try:
         session_id = request.session_id
         
         if not session_id or session_id not in chat_sessions:
-            # Create a new session if ID is not provided or not found
             new_session_id = str(os.urandom(16).hex()) # Generate a more robust session ID
             session_id = new_session_id
             print(f"Creating new chat session: {session_id}")
@@ -121,8 +123,7 @@ async def chat_endpoint(request: ChatRequest):
             session_id=session_id
         )
     except Exception as e:
-        # Log the exception server-side for more details
-        import traceback
+        # import traceback # Removed from here
         print(f"Error during chat processing for session {session_id}: {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"An internal server error occurred: {str(e)}")
@@ -144,13 +145,14 @@ class ResetResponse(BaseModel):
 async def reset_chat_session(request: ChatRequest): # Reusing ChatRequest for session_id, message is ignored
     if INITIALIZATION_ERROR:
         raise HTTPException(status_code=503, detail=f"Service Unavailable: {INITIALIZATION_ERROR}")
-    if not S_MODEL or not AVIKA_TITLES_DATA or not CHROMA_COLLECTION_INSTANCE:
-        missing_components = []
-        if not S_MODEL: missing_components.append("Sentence Model")
-        if not AVIKA_TITLES_DATA: missing_components.append("Avika Titles")
-        if not CHROMA_COLLECTION_INSTANCE: missing_components.append("Chroma Collection")
-        detail_msg = f"Service Unavailable: Core components ({', '.join(missing_components)}) not initialized."
-        raise HTTPException(status_code=503, detail=detail_msg)
+    # Simplified error checking: Relies on INITIALIZATION_ERROR to be comprehensive
+    # if not S_MODEL or not AVIKA_TITLES_DATA or not CHROMA_COLLECTION_INSTANCE:
+    #     missing_components = []
+    #     if not S_MODEL: missing_components.append("Sentence Model")
+    #     if not AVIKA_TITLES_DATA: missing_components.append("Avika Titles")
+    #     if not CHROMA_COLLECTION_INSTANCE: missing_components.append("Chroma Collection")
+    #     detail_msg = f"Service Unavailable: Core components ({', '.join(missing_components)}) not initialized."
+    #     raise HTTPException(status_code=503, detail=detail_msg)
 
     session_id = request.session_id
     if not session_id or session_id not in chat_sessions:

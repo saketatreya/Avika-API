@@ -1,9 +1,12 @@
 import os
 import chromadb
 from docx import Document
-from sentence_transformers import SentenceTransformer
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from tqdm import tqdm
+from dotenv import load_dotenv
+import traceback
+
+load_dotenv()
 
 # Environment variables
 AVIKA_DOCS_PATH_ENV = "AVIKA_DOCS_PATH"
@@ -130,7 +133,7 @@ def populate_vector_db():
         print(f"Total chunks in collection: {collection.count()}")
 
     except Exception as e:
-        import traceback
+        # import traceback # Removed from here
         print(f"An error occurred during the database population process: {e}")
         traceback.print_exc()
 
