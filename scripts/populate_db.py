@@ -1,19 +1,25 @@
 import os
-import chromadb
+# import chromadb # Replaced with qdrant_client
+from qdrant_client import QdrantClient, models # Qdrant imports
 from docx import Document
+from sentence_transformers import SentenceTransformer # Keep for embedding
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from tqdm import tqdm
 from dotenv import load_dotenv
 import traceback
+import uuid # For generating point IDs
 
 load_dotenv()
 
 # Environment variables
 AVIKA_DOCS_PATH_ENV = "AVIKA_DOCS_PATH"
-CHROMA_DB_PATH_ENV = "CHROMA_DB_PATH"
+# CHROMA_DB_PATH_ENV = "CHROMA_DB_PATH" # No longer needed for Qdrant population script
+QDRANT_URL_ENV = "QDRANT_URL" # For Qdrant server
+QDRANT_API_KEY_ENV = "QDRANT_API_KEY" # Optional, for Qdrant Cloud
 
-# ChromaDB settings
-CHROMA_COLLECTION_NAME = "docx_chunks"
+# Qdrant settings (should match AvikaChat)
+QDRANT_COLLECTION_NAME = "avika_doc_chunks"
+VECTOR_SIZE = 384  # For all-MiniLM-L6-v2
 
 # Text splitting settings
 CHUNK_SIZE = 400
@@ -34,7 +40,8 @@ def load_docx_from_folder(folder_path):
                 doc = Document(path)
                 full_text = "\n".join([para.text for para in doc.paragraphs if para.text.strip() != ""])
                 if full_text:
-                    documents.append({"content": full_text, "source": filename})
+                    # Store the raw text content directly for payload
+                    documents.append({"text_content": full_text, "source": filename})
                     print(f"  Loaded and parsed: {filename}")
                 else:
                     print(f"  Warning: No text content found in {filename}")
@@ -43,15 +50,16 @@ def load_docx_from_folder(folder_path):
     return documents
 
 def populate_vector_db():
-    """Load documents, split them, embed, and store in ChromaDB."""
+    """Load documents, split them, embed, and store in QdrantDB."""
     docs_folder = os.getenv(AVIKA_DOCS_PATH_ENV)
-    chroma_path = os.getenv(CHROMA_DB_PATH_ENV, "./chroma_storage") # Default if not set
+    qdrant_url = os.getenv(QDRANT_URL_ENV, "http://localhost:6333") # Default to local Qdrant
+    qdrant_api_key = os.getenv(QDRANT_API_KEY_ENV) # Will be None if not set
 
     if not docs_folder:
         print(f"Error: Environment variable {AVIKA_DOCS_PATH_ENV} not set. Please set it to your Avika_Docs folder path.")
         return
 
-    print("Initializing components for database population...")
+    print("Initializing components for Qdrant database population...")
     try:
         # 1. Load documents
         raw_docs = load_docx_from_folder(docs_folder)
@@ -69,75 +77,92 @@ def populate_vector_db():
         )
         print("Text splitter initialized.")
 
-        # 3. Split documents into chunks
-        chunked_docs = []
-        print("Splitting documents into chunks...")
+        # 3. Split documents into chunks for payload
+        payload_chunks = []
+        print("Splitting documents into chunks for payload...")
         for doc in raw_docs:
-            splits = text_splitter.split_text(doc["content"])
-            for i, chunk_content in enumerate(splits):
-                chunked_docs.append({
-                    "content": chunk_content,
-                    "metadata": {"source": doc["source"], "chunk_id": i}
+            splits = text_splitter.split_text(doc["text_content"])
+            for i, chunk_text in enumerate(splits):
+                payload_chunks.append({
+                    "text_chunk": chunk_text, # The actual text snippet
+                    "source": doc["source"],
+                    "chunk_id": i
                 })
-        print(f"Generated {len(chunked_docs)} chunks from {len(raw_docs)} documents.")
-        if not chunked_docs:
+        print(f"Generated {len(payload_chunks)} text chunks from {len(raw_docs)} documents.")
+        if not payload_chunks:
             print("No chunks generated. Exiting population process.")
             return
 
-        # 4. Initialize Sentence Transformer model (for embedding by ChromaDB)
-        # ChromaDB handles the embedding if an embedding function is not directly provided to collection.add with pre-embedded data.
-        # However, our avika_chat.py uses the model directly for title search. For consistency in how embeddings are made,
-        # we ensure Chroma is configured to use it or we pre-embed.
-        # The current avika_chat.py relies on Chroma collection doing its own embeddings based on its default or creation-time model.
-        # For this script, we will let ChromaDB handle embeddings for simplicity, assuming it is set up with a compatible model like MiniLM.
-        print("Initializing ChromaDB client...")
-        chroma_client = chromadb.PersistentClient(path=chroma_path)
-        # This assumes SentenceTransformer model used by ChromaDB is 'sentence-transformers/all-MiniLM-L6-v2'
-        # or compatible, which is often a default or can be specified at collection creation if not.
-        # For ensuring the same model is used, one could pass an EmbeddingFunction to get_or_create_collection
-        # from chromadb.utils import embedding_functions
-        # sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
-        # collection = chroma_client.get_or_create_collection(name=CHROMA_COLLECTION_NAME, embedding_function=sentence_transformer_ef)
-        collection = chroma_client.get_or_create_collection(name=CHROMA_COLLECTION_NAME)
-        print(f"Retrieved/Created ChromaDB collection: '{CHROMA_COLLECTION_NAME}' at {chroma_path}")
+        # 4. Initialize Sentence Transformer model for embedding
+        print("Initializing SentenceTransformer model...")
+        s_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+        print("SentenceTransformer model initialized.")
 
-        # 5. Add documents to ChromaDB in batches
-        # Check if already populated to avoid duplicates if script is rerun.
-        # A more robust check might involve checking IDs, but count is simple for now.
-        # Consider clearing the collection if a full re-population is desired: 
-        # if collection.count() > 0: 
-        #     print("Collection already has data. Consider clearing it if you want a fresh population.")
-        # For now, we'll just add, Chroma handles ID conflicts by ignoring if ID exists.
+        # 5. Initialize Qdrant client
+        print(f"Initializing Qdrant client. URL: {qdrant_url}")
+        if qdrant_api_key:
+            qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+            print("Connected to Qdrant Cloud with API key.")
+        else:
+            qdrant_client = QdrantClient(url=qdrant_url)
+            print("Connected to Qdrant (likely local) without API key.")
 
-        print("Adding documents to ChromaDB...")
-        batch_size = 100 # ChromaDB recommends batches of up to ~40k docs, much smaller here.
+        # Ensure the collection exists, create if not
+        try:
+            collection_info = qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
+            print(f"Qdrant collection '{QDRANT_COLLECTION_NAME}' already exists with {collection_info.points_count} points.")
+            # Optional: You might want to offer to clear it or check vector_size/distance compatibility
+            # For now, we assume if it exists, it's compatible or we're adding to it.
+        except Exception as e: # Catching a more specific exception if possible (e.g., from qdrant_client.http.exceptions)
+            print(f"Qdrant collection '{QDRANT_COLLECTION_NAME}' not found or error: {e}. Creating it...")
+            qdrant_client.create_collection(
+                collection_name=QDRANT_COLLECTION_NAME,
+                vectors_config=models.VectorParams(size=VECTOR_SIZE, distance=models.Distance.COSINE)
+            )
+            print(f"Qdrant collection '{QDRANT_COLLECTION_NAME}' created.")
+
+        # 6. Embed documents and upsert to Qdrant in batches
+        print("Embedding documents and upserting to Qdrant...")
+        batch_size = 100 
         added_count = 0
-        for i in tqdm(range(0, len(chunked_docs), batch_size), desc="Adding batches to ChromaDB"):
-            batch = chunked_docs[i:i+batch_size]
+        points_to_upsert = []
+
+        for i in tqdm(range(0, len(payload_chunks), batch_size), desc="Processing batches for Qdrant"):
+            batch_payloads = payload_chunks[i:i+batch_size]
             
-            documents_to_add = [doc["content"] for doc in batch]
-            metadatas_to_add = [doc["metadata"] for doc in batch]
-            ids_to_add = [f'{meta["source"]}_chunk_{meta["chunk_id"]}' for meta in metadatas_to_add]
+            # Prepare points for Qdrant
+            current_batch_points = []
+            for payload_item in batch_payloads:
+                # Embed the text chunk
+                vector = s_model.encode(payload_item["text_chunk"]).tolist()
+                # Create a unique ID for the point
+                point_id = str(uuid.uuid4())
+                current_batch_points.append(models.PointStruct(
+                    id=point_id,
+                    vector=vector,
+                    payload=payload_item # Store the text_chunk, source, chunk_id in payload
+                ))
             
-            try:
-                collection.add(
-                    documents=documents_to_add,
-                    metadatas=metadatas_to_add,
-                    ids=ids_to_add
-                )
-                added_count += len(documents_to_add)
-            except Exception as e:
-                print(f"Error adding batch {i//batch_size + 1} to ChromaDB: {e}")
+            if current_batch_points:
+                try:
+                    qdrant_client.upsert(
+                        collection_name=QDRANT_COLLECTION_NAME,
+                        points=current_batch_points,
+                        wait=True # Wait for operation to complete
+                    )
+                    added_count += len(current_batch_points)
+                except Exception as e:
+                    print(f"Error upserting batch to Qdrant: {e}")
         
-        print(f"Successfully added/updated {added_count} document chunks to ChromaDB collection '{CHROMA_COLLECTION_NAME}'.")
-        print(f"Total chunks in collection: {collection.count()}")
+        print(f"Successfully upserted {added_count} points to Qdrant collection '{QDRANT_COLLECTION_NAME}'.")
+        collection_info_after = qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
+        print(f"Total points in collection: {collection_info_after.points_count}")
 
     except Exception as e:
-        # import traceback # Removed from here
-        print(f"An error occurred during the database population process: {e}")
+        print(f"An error occurred during the Qdrant database population process: {e}")
         traceback.print_exc()
 
 if __name__ == "__main__":
-    print("Starting database population script...")
+    print("Starting Qdrant database population script...")
     populate_vector_db()
-    print("Database population script finished.") 
+    print("Qdrant database population script finished.") 

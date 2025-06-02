@@ -1,6 +1,6 @@
-# Avika Chat API
+# Avika - Your Supportive Chat Companion
 
-A FastAPI-based chatbot API that provides mental wellness support by recommending mental health resources based on user input.
+A Streamlit-based chatbot application that provides mental wellness support by recommending mental health resources based on user input. It uses Qdrant for vector storage and Google Gemini for generative AI capabilities.
 
 ---
 
@@ -16,158 +16,92 @@ Create a `.env` file in the root project directory by copying the example below.
 # Required API Key for Google Gemini
 GEMINI_API_KEY=your_gemini_api_key_here
 
-# Optional: Paths for data files (defaults are shown)
+# Required: Qdrant Connection Details
+QDRANT_URL=http://localhost:6333 # Or your Qdrant Cloud URL
+# QDRANT_API_KEY=your_qdrant_cloud_api_key_if_applicable # Uncomment and set if using Qdrant Cloud with API key
+
+# Optional: Path for Avika Titles (defaults to ./Avika_Titles.docx)
 # AVIKA_TITLES_PATH=./Avika_Titles.docx
-# CHROMA_DB_PATH=./chroma_storage
+
+# Optional: Path to the folder containing DOCX documents for the knowledge base (defaults to ./Avika_Docs/)
+# Used by scripts/populate_db.py
 # AVIKA_DOCS_PATH=./Avika_Docs/
+
+# Optional: Name for the Qdrant collection for document chunks (defaults to avika_doc_chunks)
+# QDRANT_DOC_COLLECTION_NAME=avika_doc_chunks
 ```
 
 *   `GEMINI_API_KEY`: **Required.** Your API key for Google Gemini.
+*   `QDRANT_URL`: **Required.** The URL of your Qdrant instance (e.g., `http://localhost:6333` for a local Docker setup, or your Qdrant Cloud endpoint).
+*   `QDRANT_API_KEY`: Optional. Your API key for Qdrant Cloud, if authentication is enabled.
 *   `AVIKA_TITLES_PATH`: Optional. Path to the `Avika_Titles.docx` file. Defaults to `./Avika_Titles.docx`.
-*   `CHROMA_DB_PATH`: Optional. Path to the directory where ChromaDB will store its data. Defaults to `./chroma_storage`.
-*   `AVIKA_DOCS_PATH`: Optional. Path to the folder containing DOCX documents for the knowledge base. Defaults to `./Avika_Docs/`.
+*   `AVIKA_DOCS_PATH`: Optional. Path to the folder for DOCX documents, used by `scripts/populate_db.py`. Defaults to `./Avika_Docs/`.
+*   `QDRANT_DOC_COLLECTION_NAME`: Optional. Name of the Qdrant collection for document chunks. Defaults to `avika_doc_chunks`.
 
-### 2. Install Dependencies
+### 2. Qdrant Vector Database Setup
 
+You need a running Qdrant instance for Avika to store and search document embeddings.
+
+**Option A: Local Qdrant with Docker (Recommended for Development)**
+   ```bash
+   docker run -p 6333:6333 -p 6334:6334 \
+       -v $(pwd)/qdrant_storage:/qdrant/storage:z \
+       qdrant/qdrant
+   ```
+   This creates a `qdrant_storage` directory in your project root for persistent data. Ensure `QDRANT_URL` in `.env` is `http://localhost:6333`.
+
+**Option B: Qdrant Cloud**
+   Use [Qdrant Cloud](https://cloud.qdrant.io/). Set `QDRANT_URL` and `QDRANT_API_KEY` (if applicable) in your `.env` file.
+
+### 3. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
+Ensure you have Python 3.8+ installed. Consider using a virtual environment.
 
-### 3. Populate the Vector Database
-
+### 4. Populate the Vector Database (Qdrant)
+Ensure your Qdrant instance is running and configured in `.env`. Then, run:
 ```bash
 python scripts/populate_db.py
 ```
+This processes documents from `Avika_Docs/` and titles from `Avika_Titles.docx` into Qdrant.
 
-## 🚀 How to Run
+## 🚀 How to Run the Streamlit Application
 
-### Option 1: Local Development (Recommended)
-
-**Simple and fast for development/testing:**
-
-1.  **Create `.env` file**: Copy the template from "Environment Variables" section above and fill in your `GEMINI_API_KEY`.
-2.  **Install dependencies**:
+1.  Ensure your `.env` file is correctly configured (see Setup).
+2.  Make sure your Qdrant instance is running and accessible.
+3.  Install dependencies: `pip install -r requirements.txt`.
+4.  Run the Streamlit app:
     ```bash
-    pip install -r requirements.txt
+    streamlit run streamlit_app.py
     ```
-3.  **Populate the vector database** (if not already done or if documents changed):
-    ```bash
-    python scripts/populate_db.py
-    ```
-4.  **Run the API server**:
-    ```bash
-    uvicorn api_server:app --host 0.0.0.0 --port 8000 --reload
-    ```
-
-### Option 2: Docker (For Production/Isolation)
-
-**Use Docker if you need:**
-- Consistent deployment across different environments
-- Dependency isolation
-- Easy cloud deployment
-
-```bash
-# Build and run
-docker build -t avika-chat-api .
-docker run -p 8000:8000 \
-  -e GEMINI_API_KEY="your_api_key" \
-  -v $(pwd)/chroma_storage:/app/chroma_storage \
-  -v $(pwd)/Avika_Titles.docx:/app/Avika_Titles.docx \
-  avika-chat-api
-```
-
-**Note:** Docker requires volume mounting for data persistence.
-
----
-
-## 📡 API Endpoints
-
-### 🔍 1. Health Check
-
-`GET /health`
-
-Returns the API status.
-
-Response:
-
-```json
-{
-  "status": "healthy"
-}
-```
-
-### 2. Chat with Avika
-
-`POST /chat`
-
-Send a message to the chatbot and get a relevant resource recommendation.
-
-Request Body:
-
-```json
-{
-  "message": "string",
-  "session_id": "string (optional)"
-}
-```
-
-Response:
-
-```json
-{
-  "response": "string",
-  "session_id": "string"
-}
-```
-
----
-
-## Example Usage
-
-### Using curl
-
-```bash
-# Health check
-curl http://localhost:8000/health
-
-# Chat
-curl -X POST http://localhost:8000/chat \
-     -H "Content-Type: application/json" \
-     -d '{"message": "I feel anxious lately"}'
-```
-
-### Using Python requests
-
-```python
-import requests
-
-# Health check
-print(requests.get("http://localhost:8000/health").json())
-
-# Chat
-res = requests.post("http://localhost:8000/chat", json={"message": "I feel low"})
-print(res.json())
-```
+    This will typically open the app in your web browser (e.g., at `http://localhost:8501`). The app directly uses the `AvikaChat` logic and connects to Qdrant as per your `.env` settings.
 
 ---
 
 ## 🛠️ Features
 
-- Session-aware conversations
-- RAG-based mental health recommendations
-- Safety guardrails for crisis situations
-- Only recommends from official Avika app resources
-- Interactive docs at: http://localhost:8000/docs
+-   Session-aware conversations via Streamlit session state.
+-   RAG-based mental health recommendations using Qdrant for document retrieval.
+-   LLM-powered (Google Gemini) intent detection, empathetic responses, and resource recommendations.
+-   Safety guardrails and crisis response guidance.
+-   Resources sourced from `Avika_Titles.docx`.
+-   Knowledge base context from DOCX files in `Avika_Docs/` (via Qdrant).
+-   Interactive chat interface with Streamlit.
 
 ---
 
 ## Tech Stack
 
-- FastAPI + Uvicorn
-- ChromaDB (vector database)
-- Sentence Transformers (embeddings)
-- Google Gemini API (LLM)
-- Python DOCX processing
+-   Streamlit (Web application framework)
+-   Qdrant (Vector database)
+-   Sentence Transformers (Embeddings generation)
+-   Google Gemini API (LLM for chat and intent detection)
+-   Hugging Face Transformers (RoBERTa model for offensive language detection)
+-   `python-docx` (DOCX processing)
+-   `langchain-text-splitters` (Text splitting for document chunking - used in `populate_db.py`)
+-   Python-dotenv (Environment variable management)
+-   Numpy, Torch
 
 ---
 
@@ -175,125 +109,39 @@ print(res.json())
 
 ```
 .
-├── api_server.py         # FastAPI application server
-├── avika_chat.py        # Core chatbot logic with AvikaChat class
+├── streamlit_app.py     # Main Streamlit application with AvikaChat logic
 ├── scripts/
-│   └── populate_db.py   # Script to populate the vector database
+│   └── populate_db.py   # Script to populate Qdrant
 ├── Avika_Docs/          # Folder for DOCX source documents
-├── Avika_Titles.docx    # Document containing titles and categories
-├── chroma_storage/      # (Generated) ChromaDB data directory
+├── Avika_Titles.docx    # Document with titles, categories, embedding text
+├── qdrant_storage/      # (Generated by local Qdrant Docker)
 ├── requirements.txt     # Python dependencies
-├── Dockerfile          # Optional: Container setup
-├── .dockerignore       # Docker build exclusions
-├── .gitignore          # Git version control exclusions
-└── README.md           # This documentation
+├── .env.example         # Example environment file
+├── .gitignore           # Git exclusions
+└── README.md            # This documentation
 
-# Development Files (excluded from production)
-├── Mistral_Avika.ipynb    # Jupyter notebook for experimentation
+# Potentially:
+# ├── Dockerfile           # If you decide to containerize the Streamlit app
 ```
 
 ---
 
-## Development vs Production
+## Deploying the Streamlit App
 
-### For Local Development
-```bash
-# Quick start - no Docker needed
-pip install -r requirements.txt
-python scripts/populate_db.py
-uvicorn api_server:app --reload
-```
+The easiest way to deploy a public-facing Streamlit app is using **Streamlit Community Cloud**:
+1.  Push your project to a GitHub repository.
+2.  Sign up/log in at [share.streamlit.io](https://share.streamlit.io/) with GitHub.
+3.  Deploy your app, selecting the repository, branch, and `streamlit_app.py`.
+4.  **Crucially, configure the necessary secrets (Environment Variables) in the Streamlit Cloud settings for your app** (e.g., `GEMINI_API_KEY`, `QDRANT_URL`, `QDRANT_API_KEY`).
 
-### For Production Deployment
-- **Simple servers**: Use the local approach with a process manager (PM2, systemd)
-- **Cloud platforms**: Consider Docker for consistent deployments
-- **Complex environments**: Docker provides better isolation
+For other deployment options (like Dockerizing the Streamlit app and hosting it on platforms like Render, Fly.io, or Google Cloud Run), you would create a `Dockerfile` for the Streamlit app and follow the platform's deployment guides.
 
 ---
 
-## Crisis Safety
+## Next Steps & Potential Enhancements
 
-The chatbot includes built-in responses to guide users to mental health helplines in case of crisis situations.
-
-## Recent Enhancements (Post-Initial Commit)
-
-This section details significant improvements made after the initial codebase setup, focusing on safety, conversational quality, and ethical alignment based on recent feedback.
-
-### 1. Chatbot Safety and Ethics
-
-*   **Disclaimer Implementation**: 
-    *   The chatbot now introduces itself with a clear disclaimer: `"Hello! I'm Avika, a supportive chatbot here to listen and help you find helpful resources. Please know that I'm not a licensed therapist or a replacement for professional care. If you're in crisis or experiencing severe distress, please reach out to a mental health professional or a crisis hotline. What's on your mind today?"`
-    *   This initial greeting is added to the chat history, making the LLM contextually aware of its role and limitations.
-    *   System messages within prompts also reiterate that Avika is a chatbot, not a human or a substitute for professional help.
-*   **Contextual Safety Monitoring**:
-    *   The `check_safety_concerns` method in `avika_chat.py` has been enhanced. It now analyzes the last 3 user messages along with the current input, providing a broader context for detecting potential self-harm or harm-to-others indicators.
-    *   This moves beyond simple keyword matching on the latest message to better understand nuanced or gradually revealed concerning statements.
-*   **Simulated Escalation Logging**:
-    *   When a potential safety concern is flagged, a message is now printed to the console: `SAFETY ALERT: Potential crisis detected. User history hint: [last 100 chars of context]. Flag for human review.`
-    *   This simulates a basic human-in-the-loop mechanism, indicating where a real system would trigger alerts for human moderation.
-*   **Refined Crisis Response Language**:
-    *   The `_get_crisis_response` method has been rewritten to be more empathetic, shorter, and context-aware.
-    *   Instead of a long, static message, it now offers to share resources in a more conversational tone, for example: `"It sounds like you're going through something incredibly painful, and I want you to know you're not alone. For the kind of support you need right now, it's best to talk with a professional. Can I share some resources that can help immediately?"` (It then provides key helplines).
-
-### 2. Conversational Quality
-
-*   **More Natural Empathy Prompts**:
-    *   The rules in `_construct_empathy_prompt` were relaxed to make the LLM's responses less formulaic.
-    *   The bot is now encouraged to reflect on the user's feelings, offer supportive statements, or ask a gentle follow-up question *if it feels natural*, rather than always being forced to end with a question.
-*   **Smoother Transition to Recommendations**:
-    *   The `chat` method now generates a `reflection_summary` (e.g., `"From what you've shared, it sounds like you're dealing with: [detected emotional theme]. I'd like to offer something that might be helpful."`) before suggesting resources.
-    *   This aims to make the shift from empathetic listening to resource recommendation feel less abrupt and more congruent with the conversation's flow.
-*   **Reduced Empathy-Only Turns**:
-    *   The initial phase of pure empathy (before any recommendations) was shortened from 3 turns to 2 turns (`self.turn_number < 2`). This allows the conversation to progress to actionable suggestions more quickly if appropriate, while still ensuring initial emotional validation.
-
-### 3. Resource Recommendation Handling
-
-*   **Improved "No Titles Found" Flow**:
-    *   The `_construct_recommendation_prompt` now includes specific "NO TITLES GUIDANCE."
-    *   If no suitable titles are found matching the user's current needs, the bot will now respond with: `"I wasn't able to find a specific resource that perfectly matches what you've described right now. Sometimes, telling me a bit more about what you're looking for or how you're feeling can help me find something more suitable. Would you like to try describing your needs differently, or perhaps explore a general topic?"`
-    *   This is more interactive and helpful than a dead-end message.
-
-### 4. LLM Change
-
-*   The application was migrated from using the Mistral model via OpenRouter to **Google's Gemini API** (specifically `gemini-1.5-flash`).
-*   This involved updating API call logic in `avika_chat.py`, changing relevant environment variables (from `OPENROUTER_API_KEY` to `GEMINI_API_KEY`), and adjusting `requirements.txt`.
-
-### 5. Dependency Management
-
-*   Reviewed and cleaned up `requirements.txt` to ensure only necessary packages are included. `langchain-text-splitters` is retained for its `RecursiveCharacterTextSplitter` used in `scripts/populate_db.py`, but the full `langchain` package was removed as it was not essential for current functionality.
-
-### 6. Granular Crisis Detection
-
-*   **Hybrid Approach**: The `check_safety_concerns` method in `avika_chat.py` now uses a hybrid approach for detecting safety concerns:
-    *   It retains the existing keyword-based matching for specific self-harm and harm-to-others phrases.
-    *   It incorporates a pre-trained Hugging Face Transformer model (`cardiffnlp/twitter-roberta-base-offensive`) to provide an additional layer of analysis. This model helps identify generally offensive or potentially concerning language that might not be caught by keywords alone.
-*   **Classifier Integration**:
-    *   The RoBERTa model is loaded during `AvikaChat` initialization.
-    *   User input (including recent conversational history) is tokenized and passed to the classifier.
-    *   If the classifier's "offensive" score for the input exceeds a configurable threshold (`SAFETY_CLASSIFIER_THRESHOLD`), it contributes to flagging a potential safety concern.
-*   **Combined Logic**: A concern is raised if *either* the keyword matching *or* the classifier (above threshold) indicates a potential issue.
-*   **Nuanced Logging**: The console log for safety alerts now specifies whether the alert was triggered by keywords, the classifier, or both, providing more insight into the detection.
-*   **Fallback Mechanism**: If the Hugging Face model fails to load for any reason, the system gracefully falls back to using only the keyword-based detection.
-*   **Limitations Note**: A note has been added acknowledging that distinguishing nuanced states like self-deprecating humor from genuine distress is a complex NLP challenge and the current classifier provides a general layer of safety rather than a perfect solution for such subtleties.
-
-### 7. Advanced Conversational Flow & Interaction Logic (Reduced Keyword Reliance)
-
-*   **LLM-Powered Intent Detection**:
-    *   Replaced keyword-based lists (`RECOMMENDATION_KEYWORDS`, `RESISTANCE_KEYWORDS`) with direct LLM calls (`_llm_is_requesting_recommendation`, `_llm_is_user_resistant` in `avika_chat.py`).
-    *   These methods prompt the Gemini model to analyze user input in conversational context to determine if they are asking for a resource or expressing resistance/hopelessness.
-    *   This allows for more natural language understanding and makes the system less brittle to variations in user phrasing.
-*   **State-Based Flow Control for Transitions**:
-    *   Introduced boolean state flags within the `AvikaChat` class: `recommendation_offered_in_last_turn`, `avika_just_asked_for_clarification`, and `avika_just_said_no_titles_found`.
-    *   These flags are set based on Avika's previous actions and are used in the `chat` method to make more intelligent decisions about when to transition to empathy or attempt a recommendation.
-    *   This replaces previous logic that relied on string-matching Avika's last response, making the flow control more robust and preventing awkward immediate re-recommendations after clarification requests or if no titles were found.
-*   **Nuanced Resistance Handling in Empathy Prompts**:
-    *   The `_construct_empathy_prompt` method now dynamically adjusts its guidance to the LLM if the user is flagged as resistant.
-    *   It further differentiates if the resistance is a direct response to a recommendation Avika just made (e.g., user says "why should I read that?"). In such cases, the LLM is prompted to acknowledge the specific skepticism about the resource and explore the user's reservations directly.
-    *   If resistance is more general, broader empathetic validation is prompted.
-*   **Conversation Reset Functionality**:
-    *   Added a `reset()` method to the `AvikaChat` class to clear conversation history and reset all state flags.
-    *   Exposed this via a new `/reset` POST endpoint in `api_server.py`.
-    *   The frontend (`frontend/index.html`) now includes a "Reset Conversation" button that calls this endpoint.
-    *   The frontend also now initializes the chat by calling `/reset` on page load to fetch the initial greeting and session ID, ensuring a clean start.
-
-These enhancements aim to create a more responsible, effective, and user-friendly chatbot experience.
+*   **Refine Prompts:** Continuously test and refine the LLM prompts in `streamlit_app.py` (within `AvikaChat`) for better conversation quality and recommendation accuracy.
+*   **Error Handling:** Enhance error handling and user feedback within the Streamlit app for edge cases or API issues.
+*   **Advanced Monitoring:** If deployed for wider use, integrate more comprehensive logging and monitoring.
+*   **CI/CD:** For regular updates, especially if using self-hosting, set up a CI/CD pipeline.
+*   **Modularization:** While `AvikaChat` is now in `streamlit_app.py`, consider moving it back to `avika_chat.py` and importing it if `streamlit_app.py` becomes too large, to maintain better organization.

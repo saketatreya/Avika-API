@@ -1,6 +1,7 @@
 import os
 import re
-import chromadb
+# import chromadb # Replaced with qdrant_client
+from qdrant_client import QdrantClient, models # Qdrant imports
 import numpy as np
 import google.generativeai as genai
 from docx import Document
@@ -85,12 +86,15 @@ def gemini_generate(prompt):
 class AvikaChat:
     MIN_EMPATHY_TURNS = 1 # Ensure at least one turn of empathy by default
     SAFETY_CLASSIFIER_THRESHOLD = 0.7 # Threshold for offensive content detection
+    QDRANT_COLLECTION_NAME = "avika_doc_chunks"
+    VECTOR_SIZE = 384 # For all-MiniLM-L6-v2
 
-    def __init__(self, model, avika_titles, title_embeddings, chroma_collection):
-        self.model = model
+    
+
+    def __init__(self, sentence_model, avika_titles, title_embeddings):
+        self.s_model = sentence_model
         self.avika_titles = avika_titles
         self.title_embeddings = title_embeddings
-        self.chroma_collection = chroma_collection
         self.chat_history = []
         self.turn_number = 0
         self.recommendation_offered_in_last_turn = False
@@ -107,13 +111,54 @@ class AvikaChat:
         )
         self.chat_history.append(f"{self.AVIKA_PREFIX}{self.INITIAL_GREETING}")
 
+        # Initialize Qdrant client for persistent storage
+        qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333") # Default to local Qdrant
+        qdrant_api_key = os.getenv("QDRANT_API_KEY")
+
+        print(f"Connecting to Qdrant at {qdrant_url}...")
+        try:
+            if qdrant_api_key:
+                self.qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+                print("Connected to Qdrant Cloud with API key.")
+            else:
+                self.qdrant_client = QdrantClient(url=qdrant_url)
+                print("Connected to Qdrant (likely local) without API key.")
+            
+            # Check if client is connected (e.g. by trying to list collections or get cluster info)
+            self.qdrant_client.get_collections() # This will raise an error if connection failed
+            print("Successfully connected to Qdrant.")
+
+        except Exception as e:
+            print(f"Error connecting to Qdrant: {e}. Document context search will not work.")
+            # import traceback; traceback.print_exc() # Uncomment for detailed connection errors
+            self.qdrant_client = None # Set to None if connection fails
+
+        # Ensure the collection exists if client is connected
+        if self.qdrant_client:
+            try:
+                self.qdrant_client.get_collection(collection_name=self.QDRANT_COLLECTION_NAME)
+                print(f"Qdrant collection '{self.QDRANT_COLLECTION_NAME}' already exists.")
+            except Exception as e: 
+                print(f"Qdrant collection '{self.QDRANT_COLLECTION_NAME}' not found, creating it. Error detail: {e}")
+                try:
+                    self.qdrant_client.create_collection(
+                        collection_name=self.QDRANT_COLLECTION_NAME,
+                        vectors_config=models.VectorParams(size=self.VECTOR_SIZE, distance=models.Distance.COSINE)
+                    )
+                    print(f"Qdrant collection '{self.QDRANT_COLLECTION_NAME}' created.")
+                except Exception as creation_e:
+                    print(f"Failed to create Qdrant collection '{self.QDRANT_COLLECTION_NAME}': {creation_e}")
+                    self.qdrant_client = None # Set to None if collection creation fails
+        else:
+            print("Skipping Qdrant collection check as client is not connected.")
+
         # Initialize safety classifier
         try:
             self.safety_tokenizer = AutoTokenizer.from_pretrained("cardiffnlp/twitter-roberta-base-offensive")
             self.safety_model = AutoModelForSequenceClassification.from_pretrained("cardiffnlp/twitter-roberta-base-offensive")
             print("✅ Safety classifier model loaded successfully.")
         except Exception as e:
-            print(f"⚠️ Warning: Could not load safety classifier model. Falling back to keyword-only detection. Error: {e}")
+            print(f"⚠️ Warning: Could not load safety classifier model. Error: {e}")
             self.safety_tokenizer = None
             self.safety_model = None
 
@@ -343,34 +388,56 @@ class AvikaChat:
         return response
 
     def _get_emotional_context(self, user_input):
-        """Get relevant emotional context using semantic search (internal helper method)"""
-        # Combine recent context with current input
+        """Get relevant emotional context using Qdrant semantic search."""
+        if not self.qdrant_client:
+            print("Error: Qdrant client not initialized or connection failed. Cannot perform semantic search for context.")
+            return []
+
+        # Combine recent context with current input for the query
         recent_messages = [msg.replace(self.USER_PREFIX, "") for msg in self.chat_history if msg.startswith(self.USER_PREFIX)]
         context_query = " ".join(recent_messages + [user_input])
         
-        # Get emotional context from main corpus
-        results = self.chroma_collection.query(
-            query_texts=[context_query],
-            n_results=3  # Get top 3 relevant snippets
-        )
-        
-        # Extract emotional themes and key points
-        themes = []
-        if results and results['documents'] and results['metadatas']:
-            for doc, meta in zip(results['documents'][0], results['metadatas'][0]):
-                source = meta.get('source', 'Unknown Source').replace(".docx", "").replace("_", " ")
-                # Take first 150 chars of content for key points
-                snippet = doc[:150] + "..." if len(doc) > 150 else doc
-                themes.append(f"Theme from {source}: {snippet}")
-        
-        return themes
-        
+        if not context_query.strip():
+            return [] # Avoid querying with empty string
+
+        try:
+            # 1. Embed the context_query using the sentence transformer model
+            # Ensure self.model is the sentence transformer model instance
+            query_embedding = self.s_model.encode(context_query).tolist()
+
+            # 2. Search Qdrant
+            hits = self.qdrant_client.search(
+                collection_name=self.QDRANT_COLLECTION_NAME,
+                query_vector=query_embedding,
+                limit=3,
+                # Ensure your payload in populate_db.py includes 'source' and 'text_chunk'
+                with_payload=True 
+            )
+
+            # 3. Process hits to extract themes
+            themes = []
+            if hits:
+                for hit in hits:
+                    payload = hit.payload
+                    if payload:
+                        source = payload.get('source', 'Unknown Source').replace(".docx", "").replace("_", " ")
+                        # Assuming payload stores the chunk as 'text_chunk' as in populate_db.py
+                        text_snippet = payload.get('text_chunk', '') 
+                        snippet = text_snippet[:150] + "..." if len(text_snippet) > 150 else text_snippet
+                        themes.append(f"Theme from {source}: {snippet}")
+            return themes
+        except Exception as e:
+            print(f"Error during Qdrant search in _get_emotional_context: {e}")
+            # import traceback # Consider adding for more detailed error logging if needed
+            # traceback.print_exc()
+            return []
+
     def _get_relevant_titles(self, emotional_context, content_type=None, top_k=5):
         """Get semantically relevant titles based on emotional context (internal helper method)"""
         if not self.title_embeddings:
             return []
 
-        context_embedding = self.model.encode(emotional_context)
+        context_embedding = self.s_model.encode(emotional_context)
         
         # Get all title embeddings as a matrix
         title_embeddings_matrix = np.array(list(self.title_embeddings.values()))
@@ -384,22 +451,22 @@ class AvikaChat:
         original_indices = list(self.title_embeddings.keys())
         sorted_indices_of_similarities = np.argsort(similarities)[::-1]
         
-        matching_titles = []
+    matching_titles = []
         for i in sorted_indices_of_similarities:
             original_title_idx = original_indices[i]
             title_info = self.avika_titles[original_title_idx]
             
-            if content_type:
-                if (content_type.lower() in title_info["category"].lower() or 
-                    content_type.lower() in title_info["title"].lower()):
-                    matching_titles.append(title_info)
-            else:
+        if content_type:
+            if (content_type.lower() in title_info["category"].lower() or 
+                content_type.lower() in title_info["title"].lower()):
                 matching_titles.append(title_info)
-            
-            if len(matching_titles) >= top_k:
-                break
+        else:
+            matching_titles.append(title_info)
         
-        return matching_titles
+        if len(matching_titles) >= top_k:
+            break
+    
+    return matching_titles
 
     def _llm_is_requesting_recommendation(self, user_input: str, conversation_history_str: str) -> bool:
         """Determines if the user is asking for a recommendation using an LLM call."""
@@ -482,7 +549,7 @@ class AvikaChat:
             if len(theme_content) > 100:
                 theme_content = theme_content[:100] + "..."
             reflection_text = f"you're dealing with themes like '{theme_content}'"
-        else:
+    else:
             reflection_text = primary_theme_info
 
         return f"From our conversation, it seems like {reflection_text}. I'd like to offer something that might be helpful."
@@ -539,12 +606,12 @@ class AvikaChat:
             ])
             matching_titles = self._get_relevant_titles(
                 emotional_context=emotional_context_for_titles,
-                content_type=content_preference,
-                top_k=5
-            )
+            content_type=content_preference,
+            top_k=5
+        )
             title_list_str = "\\n".join([
-                f"- {t['title']} (Category: {t['category']})"
-                for t in matching_titles
+            f"- {t['title']} (Category: {t['category']})"
+            for t in matching_titles
             ]) if matching_titles else ""
 
             prompt = self._construct_recommendation_prompt(user_input, title_list_str, emotional_context_for_titles, reflection_summary)
@@ -590,62 +657,76 @@ class AvikaChat:
         return response_text
 
     def reset(self):
-        """Resets the conversation state to the initial greeting."""
+        """Resets the conversation state. Qdrant client connection remains."""
         self.chat_history = []
         self.turn_number = 0
         self.recommendation_offered_in_last_turn = False
         self.avika_just_asked_for_clarification = False
         self.avika_just_said_no_titles_found = False
+        
+        # Qdrant client and its data are persistent; no reset needed for them here.
+        # self.s_model is also kept as is.
+        # If qdrant_client was in-memory, you would re-initialize it:
+        # if hasattr(self, 'qdrant_client') and self.qdrant_client:
+        #     self.qdrant_client.close() 
+        # self.qdrant_client = QdrantClient(":memory:") 
+        # self.qdrant_client.create_collection( ... ) 
+
         self.chat_history.append(f"{self.AVIKA_PREFIX}{self.INITIAL_GREETING}")
-        print("Chat session reset.")
+        print("Chat session reset. Persistent Qdrant connection maintained.")
         return self.INITIAL_GREETING
 
 def main():
-    """Main function for running the chat application"""
-    import traceback # Moved import traceback to top of function
+    """Main function for running the chat application (updated for Qdrant)"""
+    import traceback
     if not os.getenv("GEMINI_API_KEY"):
         print("❌ Error: GEMINI_API_KEY environment variable not set. Please set it and try again.")
         return
-    
+
     try:
         s_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
         avika_titles_data = load_avika_titles()
         title_embeddings_data = {
-            idx: s_model.encode(title["embedding_text"]) 
+            idx: s_model.encode(title["embedding_text"])
             for idx, title in enumerate(avika_titles_data)
         }
-        chroma_db_path = os.getenv("CHROMA_DB_PATH", "./chroma_storage")
-        persistent_client = chromadb.PersistentClient(path=chroma_db_path)
-        chroma_collection_instance = persistent_client.get_or_create_collection(name="docx_chunks")
+        # ChromaDB specific initialization removed
+        # chroma_db_path = os.getenv("CHROMA_DB_PATH", "./chroma_storage")
+        # persistent_client = chromadb.PersistentClient(path=chroma_db_path)
+        # chroma_collection_instance = persistent_client.get_or_create_collection(name="docx_chunks")
 
         if not avika_titles_data:
             print("❌ Error: No titles loaded. Please check Avika_Titles.docx and its path.")
             return
 
+        # Set QDRANT_URL and QDRANT_API_KEY in your .env file or environment
+        # before running this if you want to connect to a specific Qdrant instance.
+        if not os.getenv("QDRANT_URL"):
+            print("⚠️ Warning: QDRANT_URL not set. AvikaChat will default to http://localhost:6333 for Qdrant.")
+
         avika_chatbot = AvikaChat(
-            model=s_model,
+            sentence_model=s_model,
             avika_titles=avika_titles_data,
-            title_embeddings=title_embeddings_data,
-            chroma_collection=chroma_collection_instance
+            title_embeddings=title_embeddings_data
+            # chroma_collection parameter removed
         )
         
-        # Use the initial greeting from the AvikaChat class instance
         print(f"\n🧠 {avika_chatbot.INITIAL_GREETING}")
-        print("(Type 'bye' to stop the chat.)\n")
+    print("(Type 'bye' to stop the chat.)\n")
 
-        while True:
-            try:
-                user_input = input("You: ").strip()
+    while True:
+        try:
+            user_input = input("You: ").strip()
                 if user_input.lower() in ["exit", "quit", "bye", "ok thanks", "okay thank you", "thanks bye"]:
-                    print("🧠 Avika: Take care! I'm always here if you need to talk.")
-                    break
+                print("🧠 Avika: Take care! I'm always here if you need to talk.")
+                break
 
                 response = avika_chatbot.chat(user_input)
-                print(f"\n🧠 Avika: {response}\n")
-            except KeyboardInterrupt:
-                print("\n🧠 Avika: Take care! I'm always here if you need to talk.")
-                break
-            except Exception as e:
+            print(f"\n🧠 Avika: {response}\n")
+        except KeyboardInterrupt:
+            print("\n🧠 Avika: Take care! I'm always here if you need to talk.")
+            break
+        except Exception as e:
                 # import traceback # Removed from here
                 print(f"\n❌ Unexpected Error: {str(e)}")
                 traceback.print_exc() 
