@@ -180,10 +180,13 @@ def generate_title_embeddings_cached(_sentence_model, _avika_titles_data):
     
     st.info("Generating title embeddings...")
     try:
-        embeddings = {
-            idx: _sentence_model.encode(title["embedding_text"])
-            for idx, title in enumerate(_avika_titles_data)
-        }
+        embeddings = {}
+        total_titles = len(_avika_titles_data)
+        for idx, title in enumerate(_avika_titles_data):
+            embeddings[idx] = _sentence_model.encode(title["embedding_text"])
+            if (idx + 1) % 20 == 0 or (idx + 1) == total_titles:
+                st.info(f"Generated embeddings for {idx + 1}/{total_titles} titles...")
+        
         st.success(f"✅ Title embeddings generated for {len(embeddings)} titles.")
         return embeddings
     except Exception as e:
