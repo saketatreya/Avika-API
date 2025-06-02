@@ -32,6 +32,48 @@ SAFETY_MODEL = None
 
 # --- Utility Functions (Moved from avika_chat.py) ---
 
+def load_avika_titles():
+    """Load titles and categories directly from Avika_Titles.docx"""
+    # Use a default path if the environment variable is not set
+    docx_path = os.getenv("AVIKA_TITLES_PATH", "Avika_Titles.docx")
+    if not os.path.exists(docx_path):
+        # Log error to streamlit instead of raising, to allow app to start with warning
+        st.error(f"CRITICAL ERROR: Could not find Avika_Titles.docx at {docx_path}. Title recommendations will not work.")
+        return [] # Return empty list if file not found
+    
+    try:
+        doc = Document(docx_path)
+        titles_data = []
+        current_category = None
+        
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if not text: # Skip empty paragraphs
+                continue
+
+            if text.startswith("Category:"):
+                current_category = text.replace("Category:", "").strip()
+            elif text and current_category and not text.endswith("Titles"):
+                clean_title = text
+                if text[0].isdigit() and ("." in text[:3] or " " in text[:3]):
+                    parts = re.split(r'[.\\s]', text, 1)
+                    if len(parts) > 1:
+                        clean_title = parts[1].strip()
+                
+                embedding_text = f"{clean_title} - {current_category if current_category else 'General Support'} - helps with {current_category.lower() if current_category else 'general'} related challenges and emotional support"
+                
+                titles_data.append({
+                    "title": clean_title,
+                    "category": current_category if current_category else "Uncategorized",
+                    "embedding_text": embedding_text
+                })
+        if not titles_data:
+            st.warning("Warning: No titles were loaded from the DOCX file. Check the file format and content. Recommendations might be limited.")
+        return titles_data
+    except Exception as e:
+        st.error(f"Error loading Avika titles from {docx_path}: {e}")
+        return []
+
 @st.cache_data
 def load_avika_titles_cached(): # Renamed from load_avika_titles to avoid conflict for now, will adjust later
     """Load titles and categories directly from Avika_Titles.docx (Cached)"""
@@ -111,6 +153,7 @@ def gemini_generate(prompt: str) -> str:
         
     except Exception as e:
         st.error(f"Gemini API error: {e}")
+        # traceback.print_exc() # For debugging in terminal
         return "I'm currently unable to connect to my core services. Please check your internet connection and try again later."
 
 @st.cache_resource
@@ -175,9 +218,14 @@ def get_qdrant_client_cached():
         client = None
         if qdrant_api_key:
             client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key, timeout=20)
+            # st.success("Connected to Qdrant Cloud with API key.") # Success message handled by AvikaChat or global init
         else:
             client = QdrantClient(url=qdrant_url, timeout=20)
+            # st.success("Connected to Qdrant (likely local) without API key.")
         
+        # Perform a lightweight check, e.g., listing collections or a specific status check
+        # client.get_collections() # This might be too slow for a quick check if many collections
+        # client.health_check() # Prefer a faster health check if available or cluster info
         client.get_collections() # Reverted to get_collections() for connection verification
         st.success(f"Successfully connected to Qdrant at {qdrant_url}.")
         return client
@@ -231,6 +279,7 @@ class AvikaChat:
                     st.success(f"AvikaChat: Qdrant collection '{self.QDRANT_COLLECTION_NAME}' created/recreated.")
                 except Exception as e_create_coll:
                     st.error(f"AvikaChat: Failed to create/recreate Qdrant collection '{self.QDRANT_COLLECTION_NAME}': {e_create_coll}. Document context search will be impaired.")
+                    # self.qdrant_client = None # Decide if we want to nullify or let it retry later / be non-functional
         else:
             st.warning("AvikaChat: Qdrant client not provided during initialization. Document context search will be unavailable.")
 
@@ -467,6 +516,7 @@ class AvikaChat:
             return themes
         except Exception as e:
             st.sidebar.error(f"Error during Qdrant search for context: {e}")
+            # traceback.print_exc()
             return []
 
     def _get_relevant_titles(self, emotional_context: str, content_type: Optional[str] = None, top_k: int = 5) -> List[Dict[str, Any]]:
@@ -498,6 +548,8 @@ class AvikaChat:
                 return [] 
             
             # Calculate cosine similarities
+            # norm_matrix = np.linalg.norm(title_embeddings_matrix, axis=1, keepdims=True)
+            # norm_context = np.linalg.norm(context_embedding, axis=1, keepdims=True)
             norm_matrix = np.linalg.norm(title_embeddings_matrix, axis=1)
             norm_context = np.linalg.norm(context_embedding.T, axis=0) # Correct norm for context_embedding
 
@@ -513,9 +565,11 @@ class AvikaChat:
             sorted_indices_of_similarities = np.argsort(similarities)[::-1] 
             
             matching_titles = []
+            # st.sidebar.info(f"Debug _get_relevant_titles: Top similarities scores: {similarities[sorted_indices_of_similarities[:top_k+2]]}")
             for i in sorted_indices_of_similarities:
                 # Check if similarity is meaningful (e.g. > 0.3, depends on your data)
                 if similarities[i] < 0.3: # Heuristic threshold to avoid very weak matches
+                    # st.sidebar.info(f"Debug _get_relevant_titles: Similarity {similarities[i]:.2f} below threshold for title_idx {title_indices[i]}.")
                     continue
 
                 original_title_idx = title_indices[i] 
@@ -530,9 +584,11 @@ class AvikaChat:
                 
                 if len(matching_titles) >= top_k:
                     break
+            # st.sidebar.info(f"Found {len(matching_titles)} titles for context: '{emotional_context[:30]}...'")
             return matching_titles
         except Exception as e:
             st.sidebar.error(f"Error in _get_relevant_titles: {e}")
+            traceback.print_exc() 
             return []
 
     def _llm_is_requesting_recommendation(self, user_input: str, conversation_history_str: str) -> bool:
@@ -550,6 +606,7 @@ class AvikaChat:
         Analysis (YES or NO):
         """
         response = gemini_generate(prompt)
+        # st.sidebar.info(f"LLM Rec Check: '{user_input[:30]}...' -> '{response}'")
         return response.strip().upper() == "YES"
 
     def _llm_is_user_resistant(self, user_input: str, conversation_history_str: str) -> bool:
@@ -567,6 +624,7 @@ class AvikaChat:
         Analysis (YES or NO):
         """
         response = gemini_generate(prompt)
+        # st.sidebar.info(f"LLM Resist Check: '{user_input[:30]}...' -> '{response}'")
         return response.strip().upper() == "YES"
     
     def _has_sufficient_context_for_proactive_recommendation(self) -> bool:
@@ -581,6 +639,7 @@ class AvikaChat:
         
         # Check if any relevant title can be found with the current context
         potential_titles = self._get_relevant_titles(emotional_context=full_user_context, top_k=1)
+        # st.sidebar.info(f"Proactive check: Found {len(potential_titles)} titles for context: '{full_user_context[:30]}...'")
         return bool(potential_titles)
 
     def _get_content_preference(self, user_input_lower: str) -> Optional[str]:
@@ -935,4 +994,6 @@ if "avika_chat_instance" in st.session_state and st.session_state.avika_chat_ins
     else:
         st.sidebar.warning("⚠️ Safety Model (in AvikaChat): Not available")
 
-# The two lines above are removed by ensuring no lines follow this comment block. 
+# Remove old API base URL if it exists from previous structure
+# API_BASE_URL = os.getenv("AVIKA_API_URL", "http://localhost:8000") # This line should be removed if present earlier
+# API_BASE_URL = os.getenv("AVIKA_API_URL", "http://localhost:8000") # This line should be removed if present earlier 
