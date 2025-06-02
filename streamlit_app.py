@@ -912,8 +912,7 @@ if prompt := st.chat_input("What's on your mind today?"):
             assistant_response = get_avika_response(chat_instance, prompt)
         
         st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-        # No need to display assistant message here, it's handled by st.rerun() and message loop above
-        st.rerun()
+        # No need to display assistant message here, Streamlit will re-render the message loop
 
 # --- Sidebar for Controls and Status ---
 st.sidebar.title("Controls & Status")
