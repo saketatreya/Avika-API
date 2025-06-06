@@ -903,16 +903,20 @@ else:
 if prompt := st.chat_input("What's on your mind today?"):
     if not chat_instance:
         st.error("Chat session not properly initialized. Please refresh the page or check logs.")
-    else:
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        with st.spinner("Avika is thinking..."):
-            assistant_response = get_avika_response(chat_instance, prompt)
-        
-        st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-        # No need to display assistant message here, Streamlit will re-render the message loop
+        st.stop() # Stop execution if chat instance is not valid
+    
+    # 1. Append user message to the state
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    # 2. Get assistant response
+    with st.spinner("Avika is thinking..."):
+        assistant_response = get_avika_response(chat_instance, prompt)
+    
+    # 3. Append assistant response to the state
+    st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+    
+    # 4. Rerun the script to display the new messages
+    st.rerun()
 
 # --- Sidebar for Controls and Status ---
 st.sidebar.title("Controls & Status")
@@ -995,7 +999,3 @@ if "avika_chat_instance" in st.session_state and st.session_state.avika_chat_ins
         st.sidebar.info("ℹ️ Safety Model (in AvikaChat): Available")
     else:
         st.sidebar.warning("⚠️ Safety Model (in AvikaChat): Not available")
-
-# Remove old API base URL if it exists from previous structure
-# API_BASE_URL = os.getenv("AVIKA_API_URL", "http://localhost:8000") # This line should be removed if present earlier
-# API_BASE_URL = os.getenv("AVIKA_API_URL", "http://localhost:8000") # This line should be removed if present earlier 
